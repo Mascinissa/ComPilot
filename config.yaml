@@ -1,0 +1,24 @@
+# Configuration for ComPilot
+
+# LLM Configuration
+llm_id: "<LLM_ID>"  # e.g., llama3.3, gpt-4o, gemini-2.0-flash
+base_url: "<BASE_URL>" # e.g., https://api.openai.com/v1 for openai or gateway URL if running local ollama
+openai_api_key: "<SET_OPENAI_API_KEY>" # put any string if running on local ollama
+
+# Environment Paths
+benchmarks_dir: "<BENCH_FOLDER_PATH>"
+tiralib_dir: "<TIRALIB_PATH>"
+lookup_dir_suffix: "base"
+base_results_dir: "./results"
+
+# Exploration Hyperparameters
+max_llm_responses: 50
+min_nb_suggestions: 10
+nb_exec_init: 15
+min_runs_scheds: 5
+max_runs_scheds: 10
+time_budget_factor_scheds: 10
+top_p: 1
+temperature: 1
+nb_responses: 1
+experiment_name: "name_of_experiment"
