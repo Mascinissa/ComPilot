@@ -11,13 +11,17 @@ fi
 # Assign arguments to variables
 NUM_RUNS=$1            # Number of duplicates to start
 SCREEN_PREFIX=$2       # Screen session prefix
+CONFIG_FILE=${3:-config.yaml} # Optional config YAML path (default: config.yaml)
 
 PYTHON_SCRIPT="compilot.py"    # The Python script to run
 
 # The name of your Conda environment
-CONDA_CMD="source /data/scratch/mmerouani/anaconda/bin/activate"
+CONDA_DIR=/share/apps/NYUAD5/miniconda/3-4.11.0
+CONDA_ENV=/home/mm12191/.conda/envs/collm_env
+CONDA_CMD=". $CONDA_DIR/bin/activate && conda activate $CONDA_ENV"
+
 # SLURM settings
-SBATCH_COMMAND="srun -J ${SCREEN_PREFIX} --exclude lanka20,lanka04,lanka21,lanka03,lanka09 -p lanka-v2 -q commit-main --exclusive -N 1 --mem=120gb -t 3-10:00:00"
+SBATCH_COMMAND="srun -J ${SCREEN_PREFIX} --exclude=dn105 --pty -n1  --exclusive --tasks-per-node=1 --cpus-per-task=28 --mem=100G -t 7-0:00:00 --constraint='dalma&avx2&compute&dalmac'"
 
 echo "Caution⚠: This script will rerun $PYTHON_SCRIPT indefinitely until it terminates properly. Make sure to not edit $PYTHON_SCRIPT while this script is running to avoid erroneous results."
 sleep 2
@@ -35,7 +39,7 @@ do
         echo 'Starting experiment'
         while true; do
             
-            $SBATCH_COMMAND bash -c '$CONDA_CMD && python $PYTHON_SCRIPT -i=$i -c=$COMPLETION_FILE'
+            $SBATCH_COMMAND bash -c '$CONDA_CMD && python $PYTHON_SCRIPT -i=$i -c=$COMPLETION_FILE --config=$CONFIG_FILE'
             # Check if the success file was created
             if [ -f \"$COMPLETION_FILE\" ]; then
                 echo 'Experiment completed successfully.'
@@ -51,7 +55,7 @@ do
         exec bash
     "
     
-    echo "Started $SCREEN_NAME running: python $PYTHON_SCRIPT $i"
+    echo "Started $SCREEN_NAME running: python $PYTHON_SCRIPT -i=$i --config=$CONFIG_FILE"
 done
 
 

@@ -15,7 +15,142 @@ import argparse
 import json
 
 
-from all_utils import *
+import numpy as np
+
+def parse_isl_map(isl_map: str):
+    # Extract the computation and buffer parts
+    match = re.match(r'.*{\s*(\w+)\[([^\]]+)\]\s*->\s*(\w+)\[([^\]]+)\]\s*}', isl_map)
+    if not match:
+        raise ValueError("Invalid ISL map format")
+    
+    computation_name = match.group(1)
+    comp_iterators = match.group(2).split(',')
+    buffer_name = match.group(3)
+    buffer_accesses = match.group(4).split(',')
+    
+    # Strip any spaces around iterators or accesses
+    comp_iterators = [it.strip() for it in comp_iterators]
+    buffer_accesses = [access.strip() for access in buffer_accesses]
+    
+    return comp_iterators, buffer_accesses
+
+def extract_affine_coefficients(access, comp_iterators):
+    """ 
+    Extract coefficients of iterators in the affine expression.
+    Example: access = 'i1 + 2*j2', comp_iterators = ['i1', 'j2', 'k']
+    Output: [1, 2, 0, 0] (coefficients for i1, j2, k, and scalar term)
+    """
+    # remove all spaces
+    access = access.replace(' ', '')
+    
+    # Initialize coefficients (including one for the scalar term)
+    coefficients = [0] * (len(comp_iterators) + 1)
+    
+    # Match terms like '2*i1' or 'i1' or '-i1', and extract the coefficients
+    for i, it in enumerate(comp_iterators):
+        # Modify the pattern to match iterator names with numbers or underscores
+        term_pattern = re.compile(r'([+-]?\d*)\s*\*?\s*(' + re.escape(it) + r')(\b|$)')
+        match = term_pattern.search(access)
+        if match:
+            coeff = match.group(1)
+            coefficients[i] = int(coeff) if coeff and coeff != '+' and coeff != '-' else 1 if coeff == '' or coeff == '+' else -1
+    
+    # Handle the scalar part, which is just a constant not attached to any iterator
+    scalar_pattern = re.compile(r'([+-]?\b\d+\b)(?![\*\w])')  # Match isolated constants (scalars) not tied to iterators
+    scalar_match = scalar_pattern.search(access)
+    
+    if scalar_match:
+        coefficients[-1] = int(scalar_match.group(1))
+    
+    return coefficients
+
+def isl_map_to_write_access_matrix(isl_map: str):
+    # Parse the ISL map
+    comp_iterators, buffer_accesses = parse_isl_map(isl_map)
+    
+    # Initialize the access matrix (rows = buffer dimensions, columns = iterators + scalar)
+    access_matrix = []
+    
+    # Process each buffer access and extract affine coefficients
+    for access in buffer_accesses:
+        row = extract_affine_coefficients(access, comp_iterators)
+        access_matrix.append(row)
+    
+    return np.array(access_matrix).tolist()
+
+def get_program_preorder_traversal(program_annotations, comp_or_loop_name='program_root', depth=-1):
+    """ Return a list the preorder traversal of the program. Each element in the list is a dict containing basic info about a loop or computation
+    """
+    if comp_or_loop_name=='program_root': # if this is the first call, the children are the roots
+        iterators_dict = program_annotations['iterators']
+        children_names = [iter for iter in iterators_dict if iterators_dict[iter]['parent_iterator'] == None]
+        children_names = [iter for iter in children_names if not (iterators_dict[iter]['lower_bound']=='0' and iterators_dict[iter]['upper_bound']=='1')] # skip the dummy iterators (extent of 1)
+        type_ = 'loop'
+    elif comp_or_loop_name in program_annotations['iterators']:
+        iter_dict = program_annotations['iterators'][comp_or_loop_name]
+        children_names = iter_dict['child_iterators']+iter_dict['computations_list']
+        type_ = 'loop'
+    elif comp_or_loop_name in program_annotations['computations']:
+        children_names = []
+        type_ = 'comp'
+    else:
+        print("error:",comp_or_loop_name,"is not a computation name nor a loop name")
+        return None
+        
+    pre_order_traversal = [{'name':comp_or_loop_name, 'type':type_, 'depth':depth, 'nb_children':len(children_names)}]
+
+    children_names = sorted(children_names, key=lambda x:get_absolute_order(x,program_annotations))
+
+    for child_name in children_names:
+        pre_order_traversal+=get_program_preorder_traversal(program_annotations, child_name, depth+1)
+    return pre_order_traversal
+
+def get_absolute_order(comp_or_loop_name,program_annotations):
+    """ Returns the absolute order of computation or loop w.r.t the preorder traversal of the program
+    """
+    if comp_or_loop_name in program_annotations['iterators']:
+        iter_dict = program_annotations['iterators'][comp_or_loop_name]
+        if 'absolute_order' in iter_dict: # if previously computed
+            return iter_dict['absolute_order']
+        # since we want to use the abs order for getting preorder traversal, we make sure the loop's order is smaller than all its children's. 
+        # This is done by the -0.001. This works assuming that comp's abs order are always ints and a loop can't have >999 nested descendants 
+        abs_order = min([get_absolute_order(child,program_annotations) for child in iter_dict['child_iterators']+iter_dict['computations_list']])-0.001
+        iter_dict['absolute_order'] = abs_order # as an optimizatin to avoid recomputing during the recursion
+        return iter_dict['absolute_order']
+    elif comp_or_loop_name in program_annotations['computations']:
+        return program_annotations['computations'][comp_or_loop_name]['absolute_order']
+    else:
+        print("error:",comp_or_loop_name,"is not a computation name nor a loop name")
+        return None    
+
+# retruns a string that represents a memory access. eg buf_19(l0,l1+1). If iterator names are given, it uses iterator names instead of loop levels
+def get_access_str_from_access_matrix(buf_id, acc_mat, iterator_names = None, c_style = False):
+    """
+    Extract access relation str (eg "(i1 , i1 + 2*j2, k + 10)") from access matrix.
+    If iterator names are given, it uses iterator names instead of loop levels
+    :param access_matrix: as a list of lists
+    :param comp_iterator_names: a list of iterator names where the access occurs
+    :return: buf_+id+ access relation str with parentheses
+    """
+
+    dim_accesses = []
+    if iterator_names is None:
+        iterator_names = ['L'+str(i) for i in range(len(acc_mat[0]))]
+    for row in acc_mat:
+        dim_acc = ''
+        for col,e in enumerate(row):
+            if e!=0:
+                if col!=len(row)-1:
+                    dim_acc += ('+' if dim_acc!='' else '') + (str(e)+'*' if e!=1 else '') + iterator_names[col]
+                else:
+                    dim_acc += ('+' if e>0 else '') + str(int(e))
+
+        dim_accesses.append(dim_acc if dim_acc!='' else '0')
+    if c_style:
+        reconstructed_str = 'buf_' + str(buf_id) + '[' + ']['.join(dim_accesses) + ']'
+    else:
+        reconstructed_str = 'buf_' + str(buf_id) + '(' + ','.join(dim_accesses) + ')'
+    return reconstructed_str
 
 sys.path.insert(1, os.getenv("TIRALIB_DIR"))
 from tiralib.tiramisu import TiramisuProgram, Schedule, tiramisu_actions
@@ -31,11 +166,8 @@ class KnownScheduleCreationCrash(Exception):
         self.message = message
         super().__init__(self.message)
     
-from openai import OpenAI, AsyncOpenAI
-from IPython.display import display_markdown
-
+from openai import OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url = os.getenv("BASE_URL"), max_retries=10)
-client_async = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url = os.getenv("BASE_URL"), max_retries=10)
 
 
 BaseConfig.init(config_yaml= os.getenv("TIRALIB_DIR")+"/config.yaml")
@@ -509,76 +641,7 @@ def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperatu
     last_line = new_assitant_message.splitlines()[-1]
     return last_line, new_assitant_message
 
-async def async_chat_completion(messages, top_p = 1, temperature = 1):
-    response = await client_async.chat.completions.create(
-        model=llm_id,
-        top_p = top_p,
-        temperature = temperature,
-        messages=messages
-    )
-    
-    return response
-    
-async def get_LLM_response_async_voting(compiler_response, llm_reponses_trace, top_p = 1, temperature=1, nb_responses=1):
-    new_user_message = compiler_response 
-    messages = llm_reponses_trace[-1]['all_prev_messages'][:]
-    messages.append({"role": "user", "content": new_user_message})
-    responses = await asyncio.gather(*[async_chat_completion(messages=messages, temperature = temperature, top_p=top_p) for _ in range(nb_responses)])
-    # response = async_chat_completion(messages=messages, temperature = temperature, top_p=top_p)
-    llm_sched_choices = []
-    grouped_messages_per_sched = group_responses_per_sched([response.choices[0] for response in responses])
-    selected_sched = max(list(grouped_messages_per_sched.keys()), key = lambda x:len(grouped_messages_per_sched[x]))
-    selected_message = grouped_messages_per_sched[selected_sched][0]
-    new_assitant_message = selected_message
-    messages.append({"role": "assistant", "content": new_assitant_message})
-    llm_reponses_trace_elem = {'all_prev_messages':messages, #includes all the conversation so far including the newly selected llm message
-                              'grouped_answers_per_sched':grouped_messages_per_sched, # includes all the answers gotten from the llm grouped my the suggested schedule
-                               'new_selected_sched': selected_sched, # the sched that has newly been selected.
-                               'tokens_usage': { # the number of tokens used so far
-                                   'completion_tokens': responses[0].usage.completion_tokens, # just taking the tokens for response 0 as an estimate since the index of selected response not saved above
-                                   'prompt_tokens': responses[0].usage.prompt_tokens,
-                                   'total_tokens': responses[0].usage.total_tokens
-                               }
-                              }
-    llm_reponses_trace.append(llm_reponses_trace_elem)
-    last_line = new_assitant_message.splitlines()[-1]
-    return last_line, new_assitant_message
-    
-# def get_LLM_response_w_voting(compiler_response, top_p, n):
-#     new_user_message = compiler_response 
-#     messages = llm_reponses_trace[-1]['all_prev_messages'][:]
-#     messages.append({"role": "user", "content": new_user_message})
-#     response = client.chat.completions.create(
-#         model=llm_id,
-#         top_p = top_p,
-#         n = n,
-#         messages=messages
-#     )
-#     llm_sched_choices = []
-#     # for choice in response.choices:
-        
-#     #     last_line = choice.message.content.splitlines()[-1]
-#     #     if 'no further transformations' in last_line.lower():
-#     #         llm_sched_choices.append('No further transformations')
-#     #     elif last_line.lower().startswith('full list of transformations:'):
-#     #         assert last_line.count(':') == 1
-#     #         llm_sched = last_line.split(':')[1].replace(' ', '')
-#     #         llm_sched_choices.append(llm_sched)
-#     #     else:
-#     #         # unparsable response, just skip
-#     #         pass
-#     grouped_messages_per_sched = group_responses_per_sched(response.choices)
-#     selected_sched = max(list(grouped_messages_per_sched.keys()), key = lambda x:len(grouped_messages_per_sched[x]))
-#     selected_message = grouped_messages_per_sched[selected_sched][0]
-#     new_assitant_message = selected_message
-#     messages.append({"role": "assistant", "content": new_assitant_message})
-#     llm_reponses_trace_elem = {'all_prev_messages':messages, #includes all the conversation so far including the newly selected llm message
-#                               'grouped_answers_per_sched':grouped_messages_per_sched, # includes all the answers gotten from the llm grouped my the suggested schedule
-#                                'new_selected_sched': selected_sched # the sched that has newly been selected.
-#                               }
-#     llm_reponses_trace.append(llm_reponses_trace_elem)
-#     last_line = new_assitant_message.splitlines()[-1]
-#     return last_line, new_assitant_message
+
 
 
 def initialize_conversation(system_intructions, first_message, temperature=0, seed=42):
@@ -637,20 +700,7 @@ def group_responses_per_sched(choices):
 
     return responses_dict
 
-# def schedule_is_valid(schedule, llm_transfs):
-#     if not unrollings_applied_last_in_branch(schedule, llm_transfs):
-#         return False
-#     elif not unrollings_applied_once_in_branch(schedule, llm_transfs):
-#         return False
-#     elif has_unroll_factor_1(schedule, llm_transfs):
-#         return False
-#     elif has_skewing_interchange_on_imperfectly_nested(schedule, llm_transfs):
-#         return False
-#     elif has_skewing_tiling_on_non_consecutive(schedule, llm_transfs):
-#         return False
-#     elif has_tiling_interchange_after_parallelization(schedule, llm_transfs):
-#         return False
-#     return True
+
 
 def is_new_optim_valid(prev_schedule, new_optim, llm_transfs):
     if new_optim.is_unrolling():
@@ -719,19 +769,7 @@ def has_unroll_factor_1(prev_schedule, new_optim, llm_transfs):
         return True
     return False
 
-# def _has_skewing_interchange_on_imperfectly_nested(schedule, llm_transfs):
-#     for i,optim in enumerate(schedule.optims_list):
-#         if optim.is_interchange(): 
-#             iterators = sorted(optim.params, key=lambda x:x[1])
-#             if notare_iterators_perfectly_nested(schedule.tree, iterators):
-#                 raise KnownScheduleCreationCrash(f'Interchange cannot be applied on imperfectly nested loops (command "{llm_transfs[i]}")')
-#                 return True
-#         elif optim.is_skewing():      
-#             if notare_iterators_perfectly_nested(schedule.tree, optim.iterators):
-#                 raise KnownScheduleCreationCrash(f'Skewing cannot be applied on imperfectly nested loops (command "{llm_transfs[i]}")')
-#                 return True
 
-#     return False
 
 def are_iterators_perfectly_nested(schedule_tree, iter_id_list_inp):
     # make sure that the ids are canonical (i.e. use the names that figure in tree.iterators)
@@ -755,45 +793,7 @@ def are_iterators_consecutive(iter_id_list):
         return False
     return True
             
-# def _has_skewing_tiling_on_non_consecutive(schedule, llm_transfs):
-#     for i,optim in enumerate(schedule.optims_list):
-#         # if optim.is_interchange(): 
-#         #     if abs(optim.params[1][1]-optim.params[0][1])!=1:
-#         #         raise KnownScheduleCreationCrash(f'Interchange cannot be applied on non consecutive loops (command "{llm_transfs[i]}"')
-#         #         return True 
-#         if optim.is_skewing():
-#             if (optim.iterators[1][1]-optim.iterators[0][1])!=1:
-#                 raise KnownScheduleCreationCrash(f'Skewing cannot be applied on non consecutive loops (command "{llm_transfs[i]}"')
-#                 return True 
-#         elif optim.is_any_tiling():
-#             if any((optim.iterators[i+1][1]-optim.iterators[i][1])!=1 for i in range(len(optim.iterators)-1)):
-#                 raise KnownScheduleCreationCrash(f'Tiling cannot be applied on non consecutive loops (command "{llm_transfs[i]}"')
-#                 return True 
-#     return False
 
-# def _has_tiling_interchange_after_parallelization(schedule, llm_transfs):
-#     parallelization_indices = []
-#     for i,optim in enumerate(schedule.optims_list):
-#         if optim.is_parallelization():
-#             parallelization_indices.append(i)
-            
-#     for parallelization_idx in parallelization_indices:
-#         parallelization_action = schedule.optims_list[parallelization_idx]
-#         parallel_level = parallelization_action.iterator_id[1]
-#         involved_comps = parallelization_action.comps
-#         # alternative_ids = schedule.tree.get_alternative_iterator_identifers(schedule.tree.get_iterator_name_from_id(iterator_id))
-#         for j, optim in enumerate(schedule.optims_list[parallelization_idx+1:]):
-#             if optim.is_interchange():
-#                 # if it affects parallelized comps and one of the interchanged levels is parallelized, this can cause a wrong legality evaluation
-#                 if any(comp in involved_comps for comp in optim.comps) and (optim.params[0][1]==parallel_level or optim.params[1][1]==parallel_level):
-#                     raise KnownScheduleCreationCrash(f'Interchange {llm_transfs[j+parallelization_idx+1]} cannot be applied after parallelization on the same loop (parallelized by {llm_transfs[parallelization_idx]}). You might consider reordering the transformations.')
-#                     return True
-#             elif optim.is_any_tiling():
-#                 # if it affects parallelized comps and and the tiling level is higher than the parallel one, this can cause a wrong legality evaluation since new loops will be created while the parallel tag stays in the same level
-#                 if any(comp in involved_comps for comp in optim.comps) and (optim.iterators[0][1]<parallel_level):
-#                     raise KnownScheduleCreationCrash(f'Tiling {llm_transfs[j+parallelization_idx+1]} cannot be applied after parallelization on the same loop (parallelized by {llm_transfs[parallelization_idx]}). You might consider reordering the transformations.')
-#                     return True
-#     return False
 
 def has_interchange_on_parallelized_loops(prev_schedule, new_optim, llm_transfs):
     assert new_optim.is_interchange()

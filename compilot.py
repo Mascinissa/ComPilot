@@ -7,8 +7,15 @@ import pickle
 import yaml
 from pathlib import Path
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--run-id', '-i', help="run_ID to be appended to experiment name", type= str)
+parser.add_argument('--experiment-name', '-n', help="name of the experiment", type= str)
+parser.add_argument('--completion-file', '-c', help="a name for the completion signaling file", type= str, default= "0")
+parser.add_argument('--config', help="path to the yaml configuration file", type= str, default= "config.yaml")
+args = parser.parse_args()
+
 # Load config
-with open('config.yaml', 'r') as f:
+with open(args.config, 'r') as f:
     config = yaml.safe_load(f)
 
 os.environ['OPENAI_API_KEY'] = config.get("openai_api_key", "<SET_OPENAI_API_KEY>")
@@ -39,12 +46,6 @@ time_budget_factor_scheds = config.get("time_budget_factor_scheds", 10)
 top_p = config.get("top_p", 1)
 temperature = config.get("temperature", 1)
 nb_responses = config.get("nb_responses", 1)
-
-parser = argparse.ArgumentParser()
-parser.add_argument('--run-id', '-i', help="run_ID to be appended to experiment name", type= str)
-parser.add_argument('--experiment-name', '-n', help="name of the experiment", type= str)
-parser.add_argument('--completion-file', '-c', help="a name for the completion signaling file", type= str, default= "0")
-args = parser.parse_args()
 
 if args.experiment_name is not None:
 	base_experiment_name = args.experiment_name
@@ -85,8 +86,6 @@ with open(params_file, 'w') as f:
     f.write(json.dumps(params_dict))
 
 slurmd_nodename = os.environ.get('SLURMD_NODENAME', '')
-if slurmd_nodename and 'lanka' in slurmd_nodename:
-    assert 'lanka03' <= slurmd_nodename <= 'lanka24', f"Non lanka-v2 node used? {slurmd_nodename}"
 
 per_bench_results = dict()
 per_bench_results_pkl = f'{results_dir}/per_bench_results_{experiment_name}.pkl'
@@ -182,7 +181,7 @@ Before you start suggesting transformations. Tell me what are the different loop
         f.seek(0)
         if f.read(1) == '':
             #if emtpy write header
-            f.write('benchmark; init_exec_time; nb_explored; nb_executed; optim_time; best_exec_time; best_speedup; best_sched;' + '\n')
+            f.write('benchmark, init_exec_time, nb_explored, nb_executed, optim_time, best_exec_time, best_speedup, best_sched,' + '\n')
         ran_scheds = [s for s in explored_scheds if s[1]=='ran']
         if ran_scheds:
             best_sched = sorted(ran_scheds, key=lambda x:x[3])[0]
@@ -193,7 +192,7 @@ Before you start suggesting transformations. Tell me what are the different loop
             best_sched_str = ''
             best_sched_exec = initial_exec_time
             best_sched_speedup = 1
-        f.write(f"{benchmark_name}; {initial_exec_time}; {len(explored_scheds)}; {len(ran_scheds)}; {optim_time}; {best_sched_exec}; {best_sched_speedup}; {best_sched_str}\n")
+        f.write(f'{benchmark_name}, {initial_exec_time}, {len(explored_scheds)}, {len(ran_scheds)}, {optim_time}, {best_sched_exec}, {best_sched_speedup}, "{best_sched_str}"\n')
 
     with open(per_bench_results_pkl, 'wb') as f:
         pickle.dump(per_bench_results, f)
