@@ -2,7 +2,6 @@ from sympy import simplify, nsimplify
 import re
 from string import ascii_lowercase
 import logging
-import asyncio
 import os
 from pathlib import Path
 import time
@@ -11,7 +10,6 @@ import sys
 from filelock import FileLock
 import traceback
 import random
-import argparse
 import json
 
 
@@ -605,70 +603,52 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
 
 
 
-def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperature=1):
-    new_user_message = compiler_response
-    messages = llm_reponses_trace[-1]['all_prev_messages'][:]
-    messages.append({"role": "user", "content": new_user_message})
+def get_LLM_response(compiler_response, dialogue_messages, token_usage, top_p=1, temperature=1):
+    dialogue_messages.append({"role": "user", "content": compiler_response})
     got_a_response = False
     while not got_a_response:
         response = client.chat.completions.create(
             model=llm_id,
-            top_p = top_p,
-            temperature = temperature,
-            messages=messages
+            top_p=top_p,
+            temperature=temperature,
+            messages=dialogue_messages
         )
         if response.choices is not None:
             got_a_response = True
-            new_assitant_message = response.choices[0].message.content
+            assistant_message = response.choices[0].message.content
         else:
-            print('No response recieved, retrying in 15s', response)
+            print('No response received, retrying in 15s', response)
             time.sleep(15)
-    
-    
-    messages.append({"role": "assistant", "content": new_assitant_message})
-    
-    # Doing the following to keep the same format as the one of the voting mechanism
-    llm_reponses_trace_elem = {'all_prev_messages':messages, #includes all the conversation so far including the newly selected llm message
-                              'grouped_answers_per_sched':'no voting', # includes all the answers gotten from the llm grouped my the suggested schedule
-                               'new_selected_sched': 'no voting', # the sched that has newly been selected.
-                               'tokens_usage': { # the number of tokens used so far
-                                   'completion_tokens': response.usage.completion_tokens,
-                                   'prompt_tokens': response.usage.prompt_tokens,
-                                   'total_tokens': response.usage.total_tokens
-                               }
-                              }
-    llm_reponses_trace.append(llm_reponses_trace_elem)
-    last_line = new_assitant_message.splitlines()[-1]
-    return last_line, new_assitant_message
+
+    dialogue_messages.append({"role": "assistant", "content": assistant_message})
+    token_usage['completion_tokens'] += response.usage.completion_tokens
+    token_usage['prompt_tokens'] += response.usage.prompt_tokens
+    token_usage['total_tokens'] += response.usage.total_tokens
+    return assistant_message
 
 
 
 
-def initialize_conversation(system_intructions, first_message, temperature=0, seed=42):
-    messages=[
-        {"role": "system", "content": system_intructions},
+def initialize_conversation(system_instructions, first_message, temperature=0, seed=42):
+    dialogue_messages = [
+        {"role": "system", "content": system_instructions},
         {"role": "user", "content": first_message}
     ]
-    # sending system message and first message
     response = client.chat.completions.create(
         model=llm_id,
-        messages=messages,
-        temperature = temperature,
-        seed = seed
+        messages=dialogue_messages,
+        temperature=temperature,
+        seed=seed
     )
-    new_assitant_message = response.choices[0].message.content
-    messages.append({"role": "assistant", "content": new_assitant_message})
+    assistant_message = response.choices[0].message.content
+    dialogue_messages.append({"role": "assistant", "content": assistant_message})
 
-    llm_reponses_trace = [{'all_prev_messages':messages, 
-                           'grouped_answers_per_sched':None, 
-                           'new_selected_sched': None, 
-                           'tokens_usage': { # the number of tokens used so far
-                               'completion_tokens': response.usage.completion_tokens,
-                               'prompt_tokens': response.usage.prompt_tokens,
-                               'total_tokens': response.usage.total_tokens
-                           } 
-                          }]
-    return llm_reponses_trace, new_assitant_message
+    token_usage = {
+        'completion_tokens': response.usage.completion_tokens,
+        'prompt_tokens': response.usage.prompt_tokens,
+        'total_tokens': response.usage.total_tokens
+    }
+    return dialogue_messages, token_usage, assistant_message
     
 def print_llm_message(id, message, as_markdown=False):
     if as_markdown:
@@ -681,24 +661,6 @@ def print_compiler_message(id, message, as_markdown=False):
         display_markdown(f'{id}➡️ Compiler: '+ message + '\n', raw=True)    
     else:
         print(f'\033[1m{id}➡️ Compiler:\033[0m '+ message + '\n')  
-
-def group_responses_per_sched(choices):
-    responses_dict = dict()
-    for choice in choices:
-        last_line = choice.message.content.splitlines()[-1]
-        if 'no further transformations' in last_line.lower():
-            llm_sched = 'No further transformations'
-        elif last_line.lower().startswith('full list of transformations:'):
-            # assert last_line.count(':') == 1, f"Extra semi-column in last line? {last_line}"
-            if last_line.count(':') != 1:
-                print(f"Extra semi-column in last line? {last_line}")
-            llm_sched = last_line.split(':')[-1].replace(' ', '')
-        else:
-            # unparsable response, just skip
-            llm_sched='unparsable response?'
-        responses_dict[llm_sched] = responses_dict.get(llm_sched,[]) + [choice.message.content]
-
-    return responses_dict
 
 
 
