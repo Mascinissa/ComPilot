@@ -6,10 +6,12 @@ import yaml
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--run-id', '-i', help="run_ID to be appended to experiment name", type= str)
-parser.add_argument('--experiment-name', '-n', help="name of the experiment", type= str)
-parser.add_argument('--completion-file', '-c', help="a name for the completion signaling file", type= str, default= "0")
-parser.add_argument('--config', help="path to the yaml configuration file", type= str, default= "config.yaml")
+parser.add_argument('--run-id', '-i', help="run_ID to be appended to experiment name", type=str)
+parser.add_argument('--experiment-name', '-n', help="name of the experiment", type=str)
+parser.add_argument('--completion-file', '-c', help="a name for the completion signaling file", type=str, default="0")
+parser.add_argument('--config', help="path to the yaml configuration file", type=str, default="config.yaml")
+parser.add_argument('--worker-id', type=int, default=None, help="worker ID for parallel execution (0-indexed)")
+parser.add_argument('--num-workers', type=int, default=None, help="total number of parallel workers")
 args = parser.parse_args()
 
 # Load config
@@ -61,13 +63,22 @@ if args.run_id is not None:
 benchmarks_folder = os.environ["BENCHMARKS_DIR"]
 benchmark_paths = sorted(list(Path(benchmarks_folder).iterdir()))
 
+# Partition programs across workers (round-robin) when running in parallel mode
+if args.worker_id is not None and args.num_workers is not None:
+    assert 0 <= args.worker_id < args.num_workers, f"worker-id must be in [0, num-workers)"
+    benchmark_paths = [p for i, p in enumerate(benchmark_paths) if i % args.num_workers == args.worker_id]
+    print(f"Worker {args.worker_id}/{args.num_workers}: processing {len(benchmark_paths)} programs")
+
 # Create the directory if it doesn't exist
 Path(results_dir).mkdir(parents=True, exist_ok=True)
 
 slurmd_nodename = os.environ.get('SLURMD_NODENAME', '')
 
-# JSON results file (replaces the old pickle-based saving)
-results_json_path = f'{results_dir}/results_{experiment_name}.json'
+# JSON results file — use worker-specific filename when running in parallel
+if args.worker_id is not None:
+    results_json_path = f'{results_dir}/results_{experiment_name}_worker{args.worker_id}.json'
+else:
+    results_json_path = f'{results_dir}/results_{experiment_name}.json'
 if Path(results_json_path).is_file():
     with open(results_json_path, 'r') as f:
         results_data = json.load(f)
