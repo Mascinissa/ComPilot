@@ -46,6 +46,7 @@ time_budget_factor_scheds = config.get("time_budget_factor_scheds", 10)
 top_p = config.get("top_p", 1)
 temperature = config.get("temperature", 1)
 nb_responses = config.get("nb_responses", 1)
+enable_thinking = config.get("enable_thinking", True)
 
 if args.experiment_name is not None:
 	base_experiment_name = args.experiment_name
@@ -54,7 +55,7 @@ else:
 
 # update experiment name with relevant params
 model_name = os.environ['LLM_ID'].split('/')[1] if '/' in os.environ['LLM_ID'] else os.environ['LLM_ID']
-experiment_name = f'{base_experiment_name}_{model_name}_T{temperature}_TP{top_p}_L{min_nb_suggestions}'
+experiment_name = f'{base_experiment_name}_{model_name}_T{temperature}_TP{top_p}_L{min_nb_suggestions}_{'wT' if enable_thinking else 'woT'}'
 
 # update the results dir before adding the run's id
 results_dir = base_results_dir + '/' + experiment_name
@@ -124,14 +125,14 @@ The initial execution time is {initial_exec_time}ms.
 Before you start suggesting transformations. Tell me what are the different loops of the program and the nesting depth of each (L0, L1, ...) and give me a brief analysis of the loop nest. Do not suggest transformations yet.
     '''
     
-    llm_reponses_trace, full_message = initialize_conversation(system_instructions, first_message)
+    llm_reponses_trace, full_message = initialize_conversation(system_instructions, first_message, enable_thinking)
     curr_messages = llm_reponses_trace[-1]['all_prev_messages']
     print_compiler_message(0, curr_messages[0]['content']) # system instructin
     print_compiler_message(1, curr_messages[1]['content']) # first message about doing a program analysis
     print_llm_message(1, full_message) # program analysis
     print_compiler_message(2, start_exploration_message) # ask to start explortion
     
-    last_line, full_message = get_LLM_response(start_exploration_message, llm_reponses_trace, top_p=top_p, temperature=temperature)
+    last_line, full_message = get_LLM_response(start_exploration_message, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
     print_llm_message(2, full_message) # first suggestion
     
     explored_scheds = [] # list of tuples (llm_sched_str, outcome_type={'ran', 'illegal', 'crashed'}, is_lookedup:Bool, outcome_data:{exec_time if ran, crash exception str if crashed, None if illegal})
@@ -143,14 +144,14 @@ Before you start suggesting transformations. Tell me what are the different loop
         if llm_sched_str is None:
             compiler_response = 'The compiler could not parse your instruction. Please make sure to respect the described response format.'
             print_compiler_message(len(llm_reponses_trace), compiler_response)
-            last_line, full_message = get_LLM_response(compiler_response, llm_reponses_trace, top_p=top_p, temperature=temperature)
+            last_line, full_message = get_LLM_response(compiler_response, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
             print_llm_message(len(llm_reponses_trace), full_message)
         elif 'no_further_transformations' in llm_sched_str:
             if len(explored_scheds) < min_nb_suggestions:
                 compiler_message = continue_optimization_messages[giveups_counter%len(continue_optimization_messages)]
                 giveups_counter+=1
                 print_compiler_message(len(llm_reponses_trace), compiler_message)
-                last_line, full_message = get_LLM_response(compiler_message, llm_reponses_trace, top_p=top_p, temperature=temperature)
+                last_line, full_message = get_LLM_response(compiler_message, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
                 print_llm_message(len(llm_reponses_trace), full_message)
             else:
                 stop_message = True
@@ -167,7 +168,7 @@ Before you start suggesting transformations. Tell me what are the different loop
                 compiler_response = "You already suggested " + llm_sched_str + ". The compiler's response was:\n" + llm_sched_strs_dict[llm_sched_str]
 
             print_compiler_message(len(llm_reponses_trace), compiler_response)
-            last_line, full_message = get_LLM_response(compiler_response, llm_reponses_trace, top_p=top_p, temperature=temperature)
+            last_line, full_message = get_LLM_response(compiler_response, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
             print_llm_message(len(llm_reponses_trace), full_message)
             
     end = time.time()

@@ -397,7 +397,7 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
             loop_id2 = (compute_blocks_IDs[comp_id][0],loop_level2)
 
             # For skewing we need to do a partial check before getting the factors
-            temp_skew_action = tiramisu_actions.Skewing([loop_id1,loop_id2,'X','X'])
+            temp_skew_action = tiramisu_actions.Skewing([loop_id1,loop_id2,0,0])
             # temp hack: initialize manually
             temp_skew_action.initialize_action_for_tree(schedule.tree)
             assert is_new_optim_valid(schedule, temp_skew_action, llm_transfs[:transf_idx+1])
@@ -605,7 +605,7 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
 
 
 
-def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperature=1):
+def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperature=1, enable_thinking = True):
     new_user_message = compiler_response
     messages = llm_reponses_trace[-1]['all_prev_messages'][:]
     messages.append({"role": "user", "content": new_user_message})
@@ -615,7 +615,12 @@ def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperatu
             model=llm_id,
             top_p = top_p,
             temperature = temperature,
-            messages=messages
+            messages=messages,
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": enable_thinking
+                }
+            },
         )
         if response.choices is not None:
             got_a_response = True
@@ -644,7 +649,7 @@ def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperatu
 
 
 
-def initialize_conversation(system_intructions, first_message, temperature=0, seed=42):
+def initialize_conversation(system_intructions, first_message, temperature=0, seed=42, enable_thinking=True):
     messages=[
         {"role": "system", "content": system_intructions},
         {"role": "user", "content": first_message}
@@ -654,7 +659,12 @@ def initialize_conversation(system_intructions, first_message, temperature=0, se
         model=llm_id,
         messages=messages,
         temperature = temperature,
-        seed = seed
+        seed = seed,
+        extra_body={
+            "chat_template_kwargs": {
+                "enable_thinking": enable_thinking
+            }
+        },
     )
     new_assitant_message = response.choices[0].message.content
     messages.append({"role": "assistant", "content": new_assitant_message})
