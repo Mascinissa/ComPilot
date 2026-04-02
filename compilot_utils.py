@@ -2,7 +2,6 @@ from sympy import simplify, nsimplify
 import re
 from string import ascii_lowercase
 import logging
-import asyncio
 import os
 from pathlib import Path
 import time
@@ -11,7 +10,6 @@ import sys
 from filelock import FileLock
 import traceback
 import random
-import argparse
 import json
 
 
@@ -563,7 +561,7 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
     try:
         is_legal = schedule.is_legal()
     except Exception as e:
-        explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc())) 
+        explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc())) 
         message = f'{llm_sched_str} crashed at legality checking'
         logger.exception(message)
         update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
@@ -572,7 +570,7 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
         try:
             exec_time = min(schedule.execute(min_runs=min_runs,max_runs=max_runs,time_budget=time_budget))
             speedup = initial_exec_time/exec_time
-            explored_scheds.append((llm_sched_str, 'ran', False, exec_time)) 
+            explored_scheds.append((str(schedule), 'ran', False, exec_time)) 
             
             if speedup>=1:
                 message = f'{llm_sched_str} was legal and yielded a speedup of {round(speedup,2)}x'
@@ -583,14 +581,14 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
             return message
                 
         except ScheduleExecutionCrashed as e:
-            explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc())) 
+            explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc())) 
             message = f'{llm_sched_str} resulted in a segmentation fault'
             logger.exception(message)
             update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc())) 
             return message
             
         except Exception as e:
-            explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc())) 
+            explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc())) 
             message = f'{llm_sched_str} resulted in a segmentation fault'
             logger.exception(message)
             update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc())) 
@@ -598,7 +596,7 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
             return message
             
     else:
-        explored_scheds.append((llm_sched_str, 'illegal', False, None))
+        explored_scheds.append((str(schedule), 'illegal', False, None))
         message = f'{llm_sched_str} was not legal'
         update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'illegal', None)) 
         return message
@@ -626,7 +624,7 @@ def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperatu
             got_a_response = True
             new_assitant_message = response.choices[0].message.content
         else:
-            print('No response recieved, retrying in 15s', response)
+            print('No response received, retrying in 15s', response)
             time.sleep(15)
     
     
@@ -691,26 +689,6 @@ def print_compiler_message(id, message, as_markdown=False):
         display_markdown(f'{id}➡️ Compiler: '+ message + '\n', raw=True)    
     else:
         print(f'\033[1m{id}➡️ Compiler:\033[0m '+ message + '\n')  
-
-def group_responses_per_sched(choices):
-    responses_dict = dict()
-    for choice in choices:
-        last_line = choice.message.content.splitlines()[-1]
-        if 'no further transformations' in last_line.lower():
-            llm_sched = 'No further transformations'
-        elif last_line.lower().startswith('full list of transformations:'):
-            # assert last_line.count(':') == 1, f"Extra semi-column in last line? {last_line}"
-            if last_line.count(':') != 1:
-                print(f"Extra semi-column in last line? {last_line}")
-            llm_sched = last_line.split(':')[-1].replace(' ', '')
-        else:
-            # unparsable response, just skip
-            llm_sched='unparsable response?'
-        responses_dict[llm_sched] = responses_dict.get(llm_sched,[]) + [choice.message.content]
-
-    return responses_dict
-
-
 
 def is_new_optim_valid(prev_schedule, new_optim, llm_transfs):
     if new_optim.is_unrolling():
@@ -839,8 +817,8 @@ def validate_optim_and_add_to_schedule(prev_schedule, new_optim, llm_transfs):
     prev_schedule.add_optimizations([new_optim])
     return prev_schedule
 
-def extract_transformation_commands(last_line):
-    match = re.search(r"<schedule>(.*?)</schedule>", last_line)
+def extract_transformation_commands(message):
+    match = re.search(r"<schedule>(.*?)</schedule>", message.replace('\n',''))
 
     if match:
         llm_sched_str = match.group(1)
