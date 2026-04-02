@@ -436,7 +436,7 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
                 loop_level2 = get_innermost_level(real_comp_name, schedule)
             loop_id1 = (compute_blocks_IDs[comp_id][0],loop_level1)
             loop_id2 = (compute_blocks_IDs[comp_id][0],loop_level2)
-            new_optim = tiramisu_actions.TilingGeneral([loop_id1,loop_id2,int(factor1),int(factor2)])
+            new_optim = tiramisu_actions.Tiling2D([loop_id1,loop_id2,int(factor1),int(factor2)])
             schedule = validate_optim_and_add_to_schedule(schedule, new_optim, llm_transfs[:transf_idx+1])
 
         elif transf_inst.lower().startswith('tile3d'):
@@ -461,7 +461,7 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
             loop_id1 = (compute_blocks_IDs[comp_id][0],loop_level1)
             loop_id2 = (compute_blocks_IDs[comp_id][0],loop_level2)
             loop_id3 = (compute_blocks_IDs[comp_id][0],loop_level3)
-            new_optim = tiramisu_actions.TilingGeneral([loop_id1,loop_id2,loop_id3,int(factor1),int(factor2),int(factor3)])
+            new_optim = tiramisu_actions.Tiling3D([loop_id1,loop_id2,loop_id3,int(factor1),int(factor2),int(factor3)])
             schedule = validate_optim_and_add_to_schedule(schedule, new_optim, llm_transfs[:transf_idx+1])
 
         elif transf_inst.lower().startswith('unroll'):
