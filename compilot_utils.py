@@ -603,9 +603,8 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
 
 
 
-def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperature=1, enable_thinking = True):
+def get_LLM_response(compiler_response, messages, top_p = 1, temperature=1, enable_thinking = True):
     new_user_message = compiler_response
-    messages = llm_reponses_trace[-1]['all_prev_messages'][:]
     messages.append({"role": "user", "content": new_user_message})
     got_a_response = False
     while not got_a_response:
@@ -630,19 +629,13 @@ def get_LLM_response(compiler_response, llm_reponses_trace, top_p = 1, temperatu
     
     messages.append({"role": "assistant", "content": new_assitant_message})
     
-    # Doing the following to keep the same format as the one of the voting mechanism
-    llm_reponses_trace_elem = {'all_prev_messages':messages, #includes all the conversation so far including the newly selected llm message
-                              'grouped_answers_per_sched':'no voting', # includes all the answers gotten from the llm grouped my the suggested schedule
-                               'new_selected_sched': 'no voting', # the sched that has newly been selected.
-                               'tokens_usage': { # the number of tokens used so far
-                                   'completion_tokens': response.usage.completion_tokens,
-                                   'prompt_tokens': response.usage.prompt_tokens,
-                                   'total_tokens': response.usage.total_tokens
-                               }
-                              }
-    llm_reponses_trace.append(llm_reponses_trace_elem)
+    tokens_usage = {
+        'completion_tokens': response.usage.completion_tokens,
+        'prompt_tokens': response.usage.prompt_tokens,
+        'total_tokens': response.usage.total_tokens
+    }
     last_line = new_assitant_message.splitlines()[-1]
-    return last_line, new_assitant_message
+    return last_line, new_assitant_message, tokens_usage
 
 
 
@@ -667,16 +660,12 @@ def initialize_conversation(system_intructions, first_message, temperature=0, se
     new_assitant_message = response.choices[0].message.content
     messages.append({"role": "assistant", "content": new_assitant_message})
 
-    llm_reponses_trace = [{'all_prev_messages':messages, 
-                           'grouped_answers_per_sched':None, 
-                           'new_selected_sched': None, 
-                           'tokens_usage': { # the number of tokens used so far
-                               'completion_tokens': response.usage.completion_tokens,
-                               'prompt_tokens': response.usage.prompt_tokens,
-                               'total_tokens': response.usage.total_tokens
-                           } 
-                          }]
-    return llm_reponses_trace, new_assitant_message
+    tokens_usage = {
+        'completion_tokens': response.usage.completion_tokens,
+        'prompt_tokens': response.usage.prompt_tokens,
+        'total_tokens': response.usage.total_tokens
+    } 
+    return messages, new_assitant_message, tokens_usage
     
 def print_llm_message(id, message, as_markdown=False):
     if as_markdown:

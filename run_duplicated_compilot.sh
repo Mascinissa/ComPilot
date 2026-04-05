@@ -4,7 +4,7 @@
 
 # Check for required arguments
 if [ $# -lt 2 ]; then
-    echo "Usage: $0 <num_runs> <screen_name_prefix>"
+    echo "Usage: $0 <num_runs> <screen_name_prefix> <config_file>"
     exit 1
 fi
 

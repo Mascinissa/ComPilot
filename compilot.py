@@ -88,14 +88,18 @@ with open(params_file, 'w') as f:
 
 slurmd_nodename = os.environ.get('SLURMD_NODENAME', '')
 
-per_bench_results = dict()
-per_bench_results_pkl = f'{results_dir}/per_bench_results_{experiment_name}.pkl'
-if Path(per_bench_results_pkl).is_file():
-    with open(per_bench_results_pkl, 'rb') as f:
-        per_bench_results = pickle.load(f)
+per_bench_results_json = f'{results_dir}/results_{experiment_name}.json'
+if Path(per_bench_results_json).is_file():
+    with open(per_bench_results_json, 'r') as f:
+        results_json = json.load(f)
+else:
+    results_json = {
+        "configuration": config,
+        "programs": {}
+    }
 
 for benchmark_path in benchmark_paths:
-    if str(benchmark_path.parts[-1]) in per_bench_results:
+    if str(benchmark_path.parts[-1]) in results_json["programs"]:
         continue
     start = time.time()
     benchmark_name = str(benchmark_path.parts[-1])
@@ -125,34 +129,40 @@ The initial execution time is {initial_exec_time}ms.
 Before you start suggesting transformations. Tell me what are the different loops of the program and the nesting depth of each (L0, L1, ...) and give me a brief analysis of the loop nest. Do not suggest transformations yet.
     '''
     
-    llm_reponses_trace, full_message = initialize_conversation(system_instructions, first_message, enable_thinking)
-    curr_messages = llm_reponses_trace[-1]['all_prev_messages']
-    print_compiler_message(0, curr_messages[0]['content']) # system instructin
-    print_compiler_message(1, curr_messages[1]['content']) # first message about doing a program analysis
+    messages, full_message, tokens_usage = initialize_conversation(system_instructions, first_message, enable_thinking=enable_thinking)
+    total_tokens_usage = tokens_usage
+    print_compiler_message(0, messages[0]['content']) # system instructin
+    print_compiler_message(1, messages[1]['content']) # first message about doing a program analysis
     print_llm_message(1, full_message) # program analysis
     print_compiler_message(2, start_exploration_message) # ask to start explortion
     
-    last_line, full_message = get_LLM_response(start_exploration_message, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+    last_line, full_message, tokens_usage = get_LLM_response(start_exploration_message, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+    for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
     print_llm_message(2, full_message) # first suggestion
     
     explored_scheds = [] # list of tuples (llm_sched_str, outcome_type={'ran', 'illegal', 'crashed'}, is_lookedup:Bool, outcome_data:{exec_time if ran, crash exception str if crashed, None if illegal})
     llm_sched_strs_dict = dict() # a dict of llm_sched_str:compiler repsponse. Used to avoid rerunning same llm_sched_str
     stop_message = False
     giveups_counter = 0
-    while (not stop_message) and len(llm_reponses_trace) < max_llm_responses:
+    response_id = 2
+    while (not stop_message) and response_id < max_llm_responses:
         llm_sched_str = extract_transformation_commands(full_message)
         if llm_sched_str is None:
             compiler_response = 'The compiler could not parse your instruction. Please make sure to respect the described response format.'
-            print_compiler_message(len(llm_reponses_trace), compiler_response)
-            last_line, full_message = get_LLM_response(compiler_response, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
-            print_llm_message(len(llm_reponses_trace), full_message)
+            print_compiler_message(response_id, compiler_response)
+            last_line, full_message, tokens_usage = get_LLM_response(compiler_response, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+            for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
+            response_id += 1
+            print_llm_message(response_id, full_message)
         elif 'no_further_transformations' in llm_sched_str:
             if len(explored_scheds) < min_nb_suggestions:
                 compiler_message = continue_optimization_messages[giveups_counter%len(continue_optimization_messages)]
                 giveups_counter+=1
-                print_compiler_message(len(llm_reponses_trace), compiler_message)
-                last_line, full_message = get_LLM_response(compiler_message, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
-                print_llm_message(len(llm_reponses_trace), full_message)
+                print_compiler_message(response_id, compiler_message)
+                last_line, full_message, tokens_usage = get_LLM_response(compiler_message, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+                for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
+                response_id += 1
+                print_llm_message(response_id, full_message)
             else:
                 stop_message = True
         else: # a schedule is provided
@@ -167,16 +177,27 @@ Before you start suggesting transformations. Tell me what are the different loop
             else:
                 compiler_response = "You already suggested " + llm_sched_str + ". The compiler's response was:\n" + llm_sched_strs_dict[llm_sched_str]
 
-            print_compiler_message(len(llm_reponses_trace), compiler_response)
-            last_line, full_message = get_LLM_response(compiler_response, llm_reponses_trace, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
-            print_llm_message(len(llm_reponses_trace), full_message)
+            print_compiler_message(response_id, compiler_response)
+            last_line, full_message, tokens_usage = get_LLM_response(compiler_response, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+            for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
+            response_id += 1
+            print_llm_message(response_id, full_message)
             
     end = time.time()
     optim_time = (end-start)*1000 # in ms
-    per_bench_results[benchmark_name]= {'llm_reponses_trace':llm_reponses_trace,
-                                      'explored_scheds':explored_scheds,
-                                       'optim_time': optim_time ,# in ms
-                                       }
+    explored_schedules_json = [{
+        "schedule": "",
+        "outcome": "run",
+        "execution_time": initial_exec_time
+    }]
+    for sched in explored_scheds:
+        sched_str, outcome, is_lookup, data = sched
+        explored_schedules_json.append({
+            "schedule": sched_str,
+            "outcome": "invalid" if outcome == "illegal" else outcome,
+            "execution_time": data if outcome == "ran" else None
+        })
+
     with open(f'{results_dir}/live_results_{experiment_name}.csv','a+') as f:
         # Move the pointer to the beginning of the file
         f.seek(0)
@@ -188,15 +209,26 @@ Before you start suggesting transformations. Tell me what are the different loop
             best_sched = sorted(ran_scheds, key=lambda x:x[3])[0]
             best_sched_str = best_sched[0]
             best_sched_exec = best_sched[3]
+            best_json_sched = [best_sched_str, best_sched_exec]
             best_sched_speedup = initial_exec_time/best_sched[3]
         else:
             best_sched_str = ''
             best_sched_exec = initial_exec_time
+            best_json_sched = ["", initial_exec_time]
             best_sched_speedup = 1
         f.write(f'{benchmark_name}, {initial_exec_time}, {len(explored_scheds)}, {len(ran_scheds)}, {optim_time}, {best_sched_exec}, {best_sched_speedup}, "{best_sched_str}"\n')
 
-    with open(per_bench_results_pkl, 'wb') as f:
-        pickle.dump(per_bench_results, f)
+    results_json["programs"][benchmark_name] = {
+        "Initial_execution_time": initial_exec_time,
+        "Optimization_dialogue": messages,
+        "Explored_schedules": explored_schedules_json,
+        "Optimization_time": optim_time,
+        "token_usage": total_tokens_usage,
+        "Best_schedule": best_json_sched,
+        "program_annotation": annots
+    }
+    with open(per_bench_results_json, 'w') as f:
+        json.dump(results_json, f, indent=4)
 
 if args.completion_file != "0": # if a filename is provided for signaling completion, create it 
     with open(args.completion_file, "w") as f:
