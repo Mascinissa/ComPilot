@@ -619,7 +619,7 @@ def get_LLM_response(compiler_response, messages, top_p = 1, temperature=1, enab
                 }
             },
         )
-        if response.choices is not None:
+        if response.choices is not None and response.choices[0].message.content is not None:
             got_a_response = True
             new_assitant_message = response.choices[0].message.content
         else:
@@ -634,7 +634,7 @@ def get_LLM_response(compiler_response, messages, top_p = 1, temperature=1, enab
         'prompt_tokens': response.usage.prompt_tokens,
         'total_tokens': response.usage.total_tokens
     }
-    last_line = new_assitant_message.splitlines()[-1]
+    last_line = new_assitant_message.splitlines()[-1] if new_assitant_message else '' 
     return last_line, new_assitant_message, tokens_usage
 
 
@@ -807,6 +807,8 @@ def validate_optim_and_add_to_schedule(prev_schedule, new_optim, llm_transfs):
     return prev_schedule
 
 def extract_transformation_commands(message):
+    if not message:
+        return None
     match = re.search(r"<schedule>(.*?)</schedule>", message.replace('\n',''))
 
     if match:
