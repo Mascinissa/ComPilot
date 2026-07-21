@@ -61,6 +61,12 @@ Caches (sum of all):
     L2: 6 MiB (24 instances)  
     L3: 60 MiB (2 instances)
 
+# Rules to keep a schedule valid (following these avoids rejected suggestions):
+- Unrolling must be the LAST transformation applied to a given computation. Place every Unroll(...) command at the end of your schedule.
+- Interchange, Skewing and Tiling require the targeted loops to be perfectly nested (no other statement or loop between them). Skewing and Tiling additionally require the targeted levels to be consecutive (e.g. L1 and L2, not L0 and L2).
+- Tiling and Skewing create new loop levels and therefore renumber the deeper loops. After using them, re-check the loop-level numbers you refer to.
+- Do not unroll or tile a loop by a factor larger than its iteration count.
+
 # General Notes:
 - To unroll an innermost loop, you can use `L-1` as the loop level selector.
 - Regarding loop skewing, the compiler will automatically determine the appropriate skewing factors by running a solver. Loop skewing can either enable parallelization (of one of the two skewed loops) or improve locality. Skewing works only if applied on a pair of perfectly nested loops.

@@ -1,0 +1,16 @@
+# ComPilot Python dependencies.
+# The Tiramisu compiler and TiraLib must be installed separately (see README).
+
+# --- Core (needed to run compilot.py) ---
+openai>=1.0
+pyyaml
+numpy
+sympy
+filelock
+
+# --- Analysis / evaluation (aggregate_json_results.py, eval_utils.py) ---
+pandas
+scipy
+tqdm
+matplotlib
+plotly
