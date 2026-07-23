@@ -32,4 +32,9 @@ enable_thinking: true          # enable the model's thinking mode (if supported 
 # (initial execution time, skewing factors) are always kept.
 use_response_lookup: true
 
+# When an illegal schedule combines several transformations, pinpoint which one is
+# responsible by legality-checking each on its own. Helpful but adds one extra
+# legality check per component, so it is off by default (noticeable on large programs).
+localize_illegality: false
+
 experiment_name: "compilot_run"

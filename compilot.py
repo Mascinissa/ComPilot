@@ -30,6 +30,10 @@ os.environ['LOOKUP_DIR_SUFFIX'] = config.get("lookup_dir_suffix", "base")
 # for every schedule (recommended when comparing feedback wording or running
 # multiple stochastic runs).
 os.environ['USE_RESPONSE_LOOKUP'] = "1" if config.get("use_response_lookup", True) else "0"
+# Optionally localize the offending transformation of an illegal compound schedule
+# (see compilot_utils.LOCALIZE_ILLEGALITY). Off by default: it adds one legality
+# check per component, which is noticeable on large programs.
+os.environ['LOCALIZE_ILLEGALITY'] = "1" if config.get("localize_illegality", False) else "0"
 
 import compilot_utils
 from compilot_utils import (

@@ -269,6 +269,12 @@ llm_id = os.getenv("LLM_ID")
 # experiments). Controlled by the USE_RESPONSE_LOOKUP env var ("0" to disable).
 RESPONSE_LOOKUP_ENABLED = os.getenv("USE_RESPONSE_LOOKUP", "1") != "0"
 
+# When an illegal *compound* schedule is found, optionally pinpoint the offending
+# transformation by legality-checking each component on its own. This is helpful
+# feedback but costs one extra legality check per component, which is noticeable
+# on large programs, so it is off by default. Controlled by LOCALIZE_ILLEGALITY.
+LOCALIZE_ILLEGALITY = os.getenv("LOCALIZE_ILLEGALITY", "0") == "1"
+
 logger = logging.getLogger('__name__')
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(
@@ -790,7 +796,8 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
 
     else:
         explored_scheds.append((str(schedule), 'illegal', False, None))
-        localization_hint = _localize_illegality(llm_sched_str, tiramisu_program, annots, compute_blocks_IDs)
+        localization_hint = (_localize_illegality(llm_sched_str, tiramisu_program, annots, compute_blocks_IDs)
+                             if LOCALIZE_ILLEGALITY else '')
         message = (f'The schedule {llm_sched_str} is illegal: it violates the data dependencies of '
                    f'the program (it would change the computed result), so it was not executed.'
                    f'{localization_hint} To make progress, revoke or replace the transformation(s) '
