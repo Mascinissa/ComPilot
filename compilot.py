@@ -38,11 +38,14 @@ os.environ['LOCALIZE_ILLEGALITY'] = "1" if config.get("localize_illegality", Fal
 import compilot_utils
 from compilot_utils import (
     TiramisuProgram, Schedule, check_in_lookup_file, update_lookup_file,
-    annots_to_c_prog, initialize_conversation, print_compiler_message, 
+    annots_to_c_prog, initialize_conversation, print_compiler_message,
     print_llm_message, get_LLM_response, extract_transformation_commands,
-    get_compiler_response, logger
+    get_compiler_response, build_compact_message, get_compact_LLM_response, logger
 )
-from prompts import system_instructions, start_exploration_message, continue_optimization_messages
+from prompts import (
+    system_instructions, start_exploration_message, continue_optimization_messages,
+    compact_start_instruction, compact_next_instruction,
+)
 
 base_results_dir = config.get("base_results_dir", "./results")
 
@@ -58,6 +61,12 @@ temperature = config.get("temperature", 1)
 nb_responses = config.get("nb_responses", 1)
 enable_thinking = config.get("enable_thinking", True)
 
+# Interaction format: "conversational" (default, a growing back-and-forth transcript
+# resent each turn) or "compact" (a single message carrying the loop nest, the frozen
+# analysis, and a summary of everything explored so far, to minimize token cost).
+interaction_mode = config.get("interaction_mode", "conversational")
+compact_mode = interaction_mode == "compact"
+
 if args.experiment_name is not None:
     base_experiment_name = args.experiment_name
 else:
@@ -66,6 +75,8 @@ else:
 # update experiment name with relevant params
 model_name = os.environ['LLM_ID'].split('/')[1] if '/' in os.environ['LLM_ID'] else os.environ['LLM_ID']
 experiment_name = f"{base_experiment_name}_{model_name}_T{temperature}_TP{top_p}_L{min_nb_suggestions}_{'wT' if enable_thinking else 'woT'}"
+if compact_mode:
+    experiment_name += "_compact"
 
 # update the results dir before adding the run's id
 results_dir = base_results_dir + '/' + experiment_name
@@ -193,6 +204,7 @@ for benchmark_path in benchmark_paths:
             # Resume an interrupted dialogue from where it stopped.
             messages = checkpoint['messages']
             full_message = checkpoint['full_message']
+            analysis = checkpoint.get('analysis')  # frozen program analysis (compact mode)
             explored_scheds = checkpoint['explored_scheds']
             llm_sched_strs_dict = checkpoint['llm_sched_strs_dict']
             stop_message = checkpoint['stop_message']
@@ -203,19 +215,31 @@ for benchmark_path in benchmark_paths:
             resume_attempts = checkpoint.get('resume_attempts', 0) + 1
             print(f"Resuming {benchmark_name} from response {response_id} (attempt {resume_attempts}).")
         else:
-            # Fresh start: run the context-initialization exchange.
+            # Fresh start: run the context-initialization exchange (identical in both
+            # modes) to obtain the program analysis.
             messages, full_message, tokens_usage = initialize_conversation(system_instructions, first_message, enable_thinking=enable_thinking)
             total_tokens_usage = tokens_usage
             print_compiler_message(0, messages[0]['content']) # system instructin
             print_compiler_message(1, messages[1]['content']) # first message about doing a program analysis
             print_llm_message(1, full_message) # program analysis
-            print_compiler_message(2, start_exploration_message) # ask to start explortion
+            analysis = full_message  # frozen once; reused by every compact-mode turn
 
-            last_line, full_message, tokens_usage = get_LLM_response(start_exploration_message, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+            explored_scheds = [] # list of tuples (llm_sched_str, outcome_type={'ran', 'illegal', 'crash', 'invalid'}, is_lookedup:Bool, outcome_data:{exec_time if ran, crash exception str if crashed, None if illegal}, log_reason:str)
+
+            if compact_mode:
+                # Ask for the first suggestion via a single self-contained message
+                # (loop nest + analysis + empty log + start instruction).
+                first_compact = build_compact_message(loop_nest_str, initial_exec_time, analysis, explored_scheds, compact_start_instruction)
+                print_compiler_message(2, compact_start_instruction)
+                messages.append({"role": "user", "content": first_compact})
+                last_line, full_message, tokens_usage = get_compact_LLM_response(system_instructions, first_compact, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+                messages.append({"role": "assistant", "content": full_message})
+            else:
+                print_compiler_message(2, start_exploration_message) # ask to start explortion
+                last_line, full_message, tokens_usage = get_LLM_response(start_exploration_message, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
             for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
             print_llm_message(2, full_message) # first suggestion
 
-            explored_scheds = [] # list of tuples (llm_sched_str, outcome_type={'ran', 'illegal', 'crashed'}, is_lookedup:Bool, outcome_data:{exec_time if ran, crash exception str if crashed, None if illegal})
             llm_sched_strs_dict = dict() # a dict of llm_sched_str:compiler repsponse. Used to avoid rerunning same llm_sched_str
             stop_message = False
             giveups_counter = 0
@@ -225,7 +249,7 @@ for benchmark_path in benchmark_paths:
 
         def _checkpoint_state():
             return {
-                'messages': messages, 'full_message': full_message,
+                'messages': messages, 'full_message': full_message, 'analysis': analysis,
                 'explored_scheds': explored_scheds, 'llm_sched_strs_dict': llm_sched_strs_dict,
                 'stop_message': stop_message, 'giveups_counter': giveups_counter,
                 'response_id': response_id, 'total_tokens_usage': total_tokens_usage,
@@ -236,53 +260,68 @@ for benchmark_path in benchmark_paths:
 
         while (not stop_message) and response_id < max_llm_responses:
             llm_sched_str = extract_transformation_commands(full_message)
+            # Each branch decides what to print to the console (`outcome_text`) and what
+            # to ask the LLM next (`instruction`). In conversational mode the instruction
+            # is sent as the next turn; in compact mode it is the trailing instruction
+            # appended to the rebuilt summary message (the per-schedule outcome is already
+            # captured in the exploration log, so it is not resent as guidance).
+            outcome_text = None
+            instruction = None
             if llm_sched_str is None:
                 if full_message and 'no_further_transformations' in full_message:
-                    compiler_response = (
+                    instruction = (
                         "No schedule found. To stop, reply <schedule>no_further_transformations</schedule>; "
                         "otherwise put transformations inside the tags, e.g. <schedule>comp00.Parallelize(L0)</schedule>."
                     )
                 else:
-                    compiler_response = (
+                    instruction = (
                         "No schedule found in your reply. Put the full schedule on one line between "
                         "<schedule></schedule> tags, joining transformations with '+', e.g. "
                         "<schedule>comp00.Parallelize(L0)+comp00.Tile2D(L1,L2,32,32)</schedule>. "
                         "To stop, reply <schedule>no_further_transformations</schedule>."
                     )
-                print_compiler_message(response_id, compiler_response)
-                last_line, full_message, tokens_usage = get_LLM_response(compiler_response, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
-                for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
-                response_id += 1
-                print_llm_message(response_id, full_message)
+                outcome_text = instruction
             elif 'no_further_transformations' in llm_sched_str:
                 if len(explored_scheds) < min_nb_suggestions:
-                    compiler_message = continue_optimization_messages[giveups_counter%len(continue_optimization_messages)]
+                    instruction = continue_optimization_messages[giveups_counter%len(continue_optimization_messages)]
                     giveups_counter+=1
-                    print_compiler_message(response_id, compiler_message)
-                    last_line, full_message, tokens_usage = get_LLM_response(compiler_message, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
-                    for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
-                    response_id += 1
-                    print_llm_message(response_id, full_message)
+                    outcome_text = instruction
                 else:
                     stop_message = True
             else: # a schedule is provided
-                if llm_sched_str not in llm_sched_strs_dict:
+                is_duplicate = llm_sched_str in llm_sched_strs_dict
+                if not is_duplicate:
                     compiler_response = get_compiler_response(
-                        llm_sched_str, tiramisu_program, annots, compute_blocks_IDs, 
-                        initial_exec_time, explored_scheds, 
-                        min_runs=min_runs_scheds, max_runs=max_runs_scheds, 
+                        llm_sched_str, tiramisu_program, annots, compute_blocks_IDs,
+                        initial_exec_time, explored_scheds,
+                        min_runs=min_runs_scheds, max_runs=max_runs_scheds,
                         time_budget=time_budget_factor_scheds*initial_exec_time
                     )
                     llm_sched_strs_dict[llm_sched_str] = compiler_response
                 else:
                     compiler_response = "Already tried " + llm_sched_str + ": " + llm_sched_strs_dict[llm_sched_str]
+                outcome_text = compiler_response
+                if compact_mode:
+                    instruction = compact_next_instruction
+                    if is_duplicate:
+                        instruction = ("You proposed a schedule already in the exploration log above; "
+                                       "pick a different, untried one. " + compact_next_instruction)
+                else:
+                    instruction = compiler_response
 
-                print_compiler_message(response_id, compiler_response)
-                last_line, full_message, tokens_usage = get_LLM_response(compiler_response, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+            if not stop_message:
+                print_compiler_message(response_id, outcome_text)
+                if compact_mode:
+                    compact_msg = build_compact_message(loop_nest_str, initial_exec_time, analysis, explored_scheds, instruction)
+                    messages.append({"role": "user", "content": compact_msg})
+                    last_line, full_message, tokens_usage = get_compact_LLM_response(system_instructions, compact_msg, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
+                    messages.append({"role": "assistant", "content": full_message})
+                else:
+                    last_line, full_message, tokens_usage = get_LLM_response(instruction, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
                 for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
                 response_id += 1
                 print_llm_message(response_id, full_message)
-            
+
             # Save progress after every iteration so an interruption loses at most one step.
             save_checkpoint(benchmark_name, _checkpoint_state())
 
@@ -294,7 +333,7 @@ for benchmark_path in benchmark_paths:
             "execution_time": initial_exec_time
         }]
         for sched in explored_scheds:
-            sched_str, outcome, is_lookup, data = sched
+            sched_str, outcome, is_lookup, data = sched[:4]
             explored_schedules_json.append({
                 "schedule": sched_str,
                 "outcome": "invalid" if outcome == "illegal" else outcome,

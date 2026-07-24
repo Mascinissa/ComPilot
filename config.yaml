@@ -15,6 +15,14 @@ lookup_dir_suffix: "base"             # results of already-tried schedules are c
 base_results_dir: "./results"
 
 # --- Exploration hyperparameters ---
+# Interaction format between the system and the LLM:
+#   conversational : a growing back-and-forth transcript, resent in full every turn.
+#   compact        : a single message per turn holding the loop nest, the frozen
+#                    program analysis, and a summary (log) of everything explored so
+#                    far. Only [system prompt, this message] are sent each turn, which
+#                    keeps token cost low while aiming for the same optimization quality.
+#                    Runs are tagged with a "_compact" suffix on the experiment name.
+interaction_mode: conversational
 max_llm_responses: 50          # hard cap on the number of LLM turns per benchmark
 min_nb_suggestions: 30         # keep nudging the LLM to explore until it has tried at least this many schedules
 nb_exec_init: 15               # number of executions used to measure the initial (unoptimized) runtime

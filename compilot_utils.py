@@ -691,87 +691,117 @@ def _localize_illegality(llm_sched_str, tiramisu_program, annots, compute_blocks
     return ''
 
 
+def _derive_log_reason(outcome_type, outcome_data, initial_exec_time):
+    """Short, display-ready factual outcome for the compact exploration log. Used
+    for the 'ran' branch and to render legacy cache entries that predate the stored
+    reason. Guidance is intentionally omitted here (added once in the instruction)."""
+    if outcome_type == 'ran':
+        speedup = initial_exec_time / outcome_data
+        if speedup >= 1:
+            return f'runnable, {round(speedup, 2)}x speedup'
+        return f'runnable, {round(speedup, 2)}x (slowdown {round(1 / speedup, 2)}x)'
+    if outcome_type == 'invalid':
+        return f'invalid: {outcome_data}'
+    if outcome_type == 'illegal':
+        return "illegal: violates the program's data dependencies"
+    return 'crashed: compiler crash'  # outcome_type == 'crash'
+
+
 def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_blocks_IDs, initial_exec_time, explored_scheds, min_runs=10, max_runs=None, time_budget=None):
+    # Each explored schedule is recorded as a 5-tuple:
+    #   (sched_str, outcome_type, is_lookedup, outcome_data, log_reason)
+    # `outcome_data` keeps the raw datum (exec time / error message / traceback);
+    # `log_reason` is a short, display-ready factual outcome used by the compact-mode
+    # exploration log (guidance is added once, not repeated per entry).
     prog_name = tiramisu_program.name
     if (lookup_res := check_in_lookup_file(llm_sched_str, prog_name, 'compiler_responses')) != 'Not found':
         logger.debug(f'Response for {llm_sched_str} retrieved from lookup.')
-        message, outcome_type, outcome_data = lookup_res
-        explored_scheds.append((llm_sched_str, outcome_type, True, outcome_data)) 
+        message, outcome_type, outcome_data = lookup_res[:3]
+        reason = lookup_res[3] if len(lookup_res) > 3 else _derive_log_reason(outcome_type, outcome_data, initial_exec_time)
+        explored_scheds.append((llm_sched_str, outcome_type, True, outcome_data, reason))
         return message
     try:
         schedule = llm_sched_str_to_sched(llm_sched_str, tiramisu_program, annots, compute_blocks_IDs)
     except InvalidScheduleError as e:
         # A schedule that is syntactically/structurally invalid. Caught before any
         # compiler call and reported to the LLM with a precise, actionable reason.
-        explored_scheds.append((llm_sched_str, 'invalid', False, e.message))
+        reason = f'invalid: {e.message}'
+        explored_scheds.append((llm_sched_str, 'invalid', False, e.message, reason))
         message = f'Invalid schedule "{llm_sched_str}" (not applied). {e.message}'
         logger.info(message)
-        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'invalid', e.message))
+        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'invalid', e.message, reason))
         return message
     except KnownScheduleCreationCrash as e:
-        explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc()))
+        reason = 'crashed: could not be applied by the compiler'
+        explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc(), reason))
         message = f'"{llm_sched_str}" could not be applied. {e.message}'
         logger.exception(message)
-        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
+        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc(), reason))
         return message
     except Exception as e:
-        explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc()))
+        reason = 'crashed: compiler crash while building (too-aggressive combination)'
+        explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc(), reason))
         message = (f'"{llm_sched_str}" crashed the compiler while building ({type(e).__name__}). '
                    f'Likely an aggressive combination — reduce tiling/unrolling factors, apply '
                    f'fusion first and unrolling last, or drop a transformation.')
         logger.exception(message)
-        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
+        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc(), reason))
         return message
     try:
         is_legal = schedule.is_legal()
     except Exception as e:
-        explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc()))
+        reason = 'crashed: compiler crash during the legality check'
+        explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc(), reason))
         message = (f'"{llm_sched_str}" crashed the compiler during the legality check. '
                    f'Simplify or reorder the schedule (fusion first, unrolling last).')
         logger.exception(message)
-        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
+        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc(), reason))
         return message
     if is_legal:
         try:
             exec_time = min(schedule.execute(min_runs=min_runs,max_runs=max_runs,time_budget=time_budget))
             speedup = initial_exec_time/exec_time
-            explored_scheds.append((str(schedule), 'ran', False, exec_time)) 
-            
+            reason = _derive_log_reason('ran', exec_time, initial_exec_time)
+            explored_scheds.append((llm_sched_str, 'ran', False, exec_time, reason))
+
             if speedup>=1:
                 message = f'{llm_sched_str} ran successfully: speedup {round(speedup,2)}x.'
             else:
                 message = f'{llm_sched_str} ran successfully: speedup {round(speedup,2)}x (slowdown {round(1/speedup,2)}x).'
 
-            update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'ran', exec_time)) 
+            update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'ran', exec_time, reason))
             return message
-                
+
         except ScheduleExecutionCrashed as e:
-            explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc()))
+            reason = 'crashed: legal but segfaulted at runtime'
+            explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc(), reason))
             message = (f'"{llm_sched_str}" was legal but segfaulted at runtime. Often caused by a '
                        f'too-large unroll/tiling factor or unrolling a non-innermost loop — reduce '
                        f'factors or unroll only the innermost loop (L-1).')
             logger.exception(message)
-            update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
+            update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc(), reason))
             return message
 
         except Exception as e:
-            explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc()))
+            reason = f'crashed: legal but crashed at runtime ({type(e).__name__})'
+            explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc(), reason))
             message = (f'"{llm_sched_str}" was legal but crashed at runtime ({type(e).__name__}). '
                        f'Often caused by a too-large unroll/tiling factor or unrolling a non-innermost '
                        f'loop — reduce factors or unroll only the innermost loop (L-1).')
             logger.exception(message)
-            update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
+            update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc(), reason))
 
             return message
 
     else:
-        explored_scheds.append((str(schedule), 'illegal', False, None))
+        reason = 'illegal: violates the program\'s data dependencies'
+        explored_scheds.append((llm_sched_str, 'illegal', False, None, reason))
         localization_hint = (_localize_illegality(llm_sched_str, tiramisu_program, annots, compute_blocks_IDs)
                              if LOCALIZE_ILLEGALITY else '')
         message = (f'"{llm_sched_str}" is illegal: it violates the program\'s data dependencies, so '
                    f'it was not executed.{localization_hint} Revoke or replace the responsible '
                    f'transformation(s), or reorder them.')
-        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'illegal', None))
+        update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'illegal', None, reason))
         return message
 
 
@@ -857,7 +887,82 @@ def initialize_conversation(system_intructions, first_message, temperature=0, se
     )
     messages.append({"role": "assistant", "content": new_assitant_message})
     return messages, new_assitant_message, tokens_usage
-    
+
+
+# ----------------------------------------------------------------------------
+# Compact interaction mode
+# ----------------------------------------------------------------------------
+# Instead of a growing back-and-forth transcript (resent in full every turn), the
+# compact mode sends only two messages per turn: the system prompt and a single
+# user message holding the loop nest, the frozen program analysis, and a summary
+# of everything explored so far. This keeps the per-turn prompt small and roughly
+# constant in structure, minimizing token cost over a long exploration. The
+# trailing instruction is supplied by the caller (see prompts.py).
+
+
+def build_exploration_log(explored_scheds, initial_exec_time, top_k=5):
+    """Render the exploration summary for compact mode: an optional 'top schedules'
+    section (only schedules with speedup > 1) followed by the full chronological log
+    of every distinct schedule tried, numbered, with its factual outcome. Duplicate
+    schedule strings are collapsed to their first occurrence."""
+    seen = set()
+    unique = []
+    for entry in explored_scheds:
+        sched_str = entry[0]
+        if sched_str in seen:
+            continue
+        seen.add(sched_str)
+        reason = entry[4] if len(entry) > 4 else _derive_log_reason(entry[1], entry[3], initial_exec_time)
+        unique.append((sched_str, entry[1], entry[3], reason))
+
+    if not unique:
+        return "Exploration log: no schedules tried yet."
+
+    lines = []
+    ran = [(s, data) for (s, otype, data, _) in unique if otype == 'ran' and initial_exec_time / data > 1]
+    ran.sort(key=lambda x: x[1])  # fastest first
+    if ran:
+        lines.append("Top schedules so far (speedup > 1):")
+        for i, (s, data) in enumerate(ran[:top_k], 1):
+            lines.append(f"  {i}. {s} - {round(initial_exec_time / data, 2)}x")
+        lines.append("")
+
+    lines.append(f"Exploration log ({len(unique)} distinct schedules tried, chronological):")
+    for i, (s, _otype, _data, reason) in enumerate(unique, 1):
+        lines.append(f"  #{i} {s} -> {reason}")
+    return "\n".join(lines)
+
+
+def build_compact_message(loop_nest_str, initial_exec_time, analysis, explored_scheds, instruction, top_k=5):
+    """Assemble the single user message sent each turn in compact mode: the loop
+    nest, initial time, frozen analysis, exploration log, and a trailing instruction."""
+    exploration_log = build_exploration_log(explored_scheds, initial_exec_time, top_k=top_k)
+    return (
+        f"Here is the loop structure\n\n{loop_nest_str}\n\n"
+        f"The initial execution time is {initial_exec_time}ms.\n\n"
+        f"Program analysis:\n{analysis}\n\n"
+        f"{exploration_log}\n\n"
+        f"{instruction}"
+    )
+
+
+def get_compact_LLM_response(system_instructions, compact_user_message, top_p=1, temperature=1, enable_thinking=True):
+    """Stateless single-turn call for compact mode: sends exactly [system, user]
+    (no accumulated history) and returns (last_line, full_message, tokens_usage)."""
+    messages = [
+        {"role": "system", "content": system_instructions},
+        {"role": "user", "content": compact_user_message},
+    ]
+    new_assistant_message, tokens_usage = _chat_completion(
+        messages,
+        top_p=top_p,
+        temperature=temperature,
+        extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
+    )
+    last_line = new_assistant_message.splitlines()[-1] if new_assistant_message else ''
+    return last_line, new_assistant_message, tokens_usage
+
+
 def print_llm_message(id, message, as_markdown=False):
     if as_markdown:
         display_markdown(f'{id}⬅️ Assistant: '+ message + '\n', raw=True)    

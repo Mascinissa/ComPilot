@@ -78,6 +78,25 @@ Caches (sum of all):
 
 start_exploration_message = "Okay. Please start exploring transformations."
 
+# --- Compact-mode instructions -------------------------------------------------
+# In compact mode the whole exploration history is summarized in a single message
+# (loop nest + frozen analysis + exploration log). These strings are the trailing
+# instruction appended to that message; the per-schedule guidance lives here once
+# instead of being repeated on every log entry.
+compact_start_instruction = (
+    "Now propose your first schedule to optimize this program. Place any Unroll last. "
+    "Give a brief reasoning, then the schedule between <schedule></schedule> tags, "
+    "e.g. <schedule>comp00.Parallelize(L0)+comp00.Tile2D(L1,L2,32,32)</schedule>."
+)
+
+compact_next_instruction = (
+    "Propose ONE new schedule that is NOT already in the exploration log above and that you "
+    "expect to beat the current best. Build on the top schedules when promising, avoid repeating "
+    "patterns that were illegal/invalid/crashed, and place any Unroll last. Give a brief reasoning, "
+    "then the schedule between <schedule></schedule> tags. Reply "
+    "<schedule>no_further_transformations</schedule> only if you are confident no further gain is possible."
+)
+
 continue_optimization_messages = [
     "The current speedup is not sufficient. Try more transformations to push for higher efficiency.",
     "Ending now might leave performance gains on the table. Could you revisit your choices and see if there's more to explore?",
