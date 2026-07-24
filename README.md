@@ -100,10 +100,26 @@ For each experiment, `base_results_dir/<experiment_name>/` contains:
 - `live_results_<experiment_name>.csv` — one summary row per benchmark (best speedup, counts, timing).
 - `checkpoints/` — per-benchmark resume state (auto-deleted once a benchmark finishes).
 
-### Analysis
+---
 
-- `analyze_dialogue.py results/<...>/results_*.json` — per-benchmark breakdown of schedule outcomes (runnable / invalid / crashed), runnable-schedule rate, and best speedup (works for both interaction modes).
-- `aggregate_json_results.py -r results/<experiment_dir> --k 5` — computes the paper's aggregate metrics (COMPILOT@T and typical best-of-K) across runs.
+## Evaluation
+
+The paper reports two aggregate speedup metrics, both measured against each program's original runtime and as a function of the exploration budget `T` (the number of schedules tried):
+
+- **COMPILOT@T** — the single-run result: for each benchmark take the best speedup found within the first `T` schedules, take the median of that across runs, then the geometric mean across benchmarks.
+- **COMPILOT_K@T** — the best-of-K result: the typical speedup obtained by running `K` independent explorations and keeping the best, again aggregated across benchmarks.
+
+Because the metrics aggregate over independent runs, first produce several runs of the same experiment with distinct `--run-id` values (see [Best-of-K](#best-of-k-multiple-independent-runs)), then aggregate:
+
+```bash
+python aggregate_json_results.py -r results/<experiment_name> --k 5
+```
+
+This prints a table of COMPILOT@T and COMPILOT_K@T over `T = 5, 10, ..., 30` and writes a per-benchmark CSV (`aggregate_results_*.csv`) alongside it. The benchmarks used in the paper are the [PolyBench](https://web.cse.ohio-state.edu/~pouchet.2/software/polybench/) kernels.
+
+For a quick per-run sanity check without aggregating, `analyze_dialogue.py results/<...>/results_*.json` prints, per benchmark, how many proposed schedules were runnable vs. rejected vs. crashed, the runnable rate, and the best speedup (works for both interaction modes).
+
+To regenerate the paper's figures, see `plotting.py` (requires `matplotlib`/`plotly`).
 
 ---
 
@@ -114,7 +130,8 @@ For each experiment, `base_results_dir/<experiment_name>/` contains:
 - `prompts.py` — the system instructions and message templates used with the LLM.
 - `config.yaml` — centralized configuration.
 - `analyze_dialogue.py` — quick per-run outcome analysis.
-- `aggregate_json_results.py` / `eval_utils.py` — aggregate metrics and evaluation utilities used for the paper's results.
+- `aggregate_json_results.py` / `eval_utils.py` — the paper's aggregate metrics (COMPILOT@T and best-of-K) across runs.
+- `plotting.py` — supplementary figure-generation code used for the paper's plots (not needed to run ComPilot or compute the metrics).
 
 ## Citation
 

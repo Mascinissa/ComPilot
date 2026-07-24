@@ -1,16 +1,19 @@
 # ComPilot Python dependencies.
 # The Tiramisu compiler and TiraLib must be installed separately (see README).
 
-# --- Core (needed to run compilot.py) ---
+# --- Core: required to run compilot.py ---
 openai>=1.0
 pyyaml
 numpy
 sympy
 filelock
 
-# --- Analysis / evaluation (aggregate_json_results.py, eval_utils.py) ---
+# --- Metrics: required for aggregate_json_results.py (analyze_dialogue.py needs no extra deps) ---
 pandas
 scipy
 tqdm
+tabulate  # pandas.to_markdown() backend used by aggregate_json_results.py
+
+# --- Plotting: only for plotting.py (reproducing the paper's figures) ---
 matplotlib
 plotly
