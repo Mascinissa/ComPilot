@@ -239,19 +239,15 @@ for benchmark_path in benchmark_paths:
             if llm_sched_str is None:
                 if full_message and 'no_further_transformations' in full_message:
                     compiler_response = (
-                        "I could not parse a schedule from your message. If you want to stop, put the "
-                        "command inside the schedule tags exactly like this: "
-                        "<schedule>no_further_transformations</schedule>. Otherwise, provide your "
-                        "transformations inside the tags, e.g. <schedule>comp00.Parallelize(L0)</schedule>."
+                        "No schedule found. To stop, reply <schedule>no_further_transformations</schedule>; "
+                        "otherwise put transformations inside the tags, e.g. <schedule>comp00.Parallelize(L0)</schedule>."
                     )
                 else:
                     compiler_response = (
-                        "I could not find any transformation to apply in your message. Please put your "
-                        "full schedule on a single line between <schedule> and </schedule> tags, using "
-                        "the comp_ID.Transformation(args) syntax and joining multiple transformations "
-                        "with '+'. For example: <schedule>comp00.Parallelize(L0)+comp00.Tile2D(L1,L2,32,32)</schedule>. "
-                        "If you have no more transformations to try, reply with "
-                        "<schedule>no_further_transformations</schedule>."
+                        "No schedule found in your reply. Put the full schedule on one line between "
+                        "<schedule></schedule> tags, joining transformations with '+', e.g. "
+                        "<schedule>comp00.Parallelize(L0)+comp00.Tile2D(L1,L2,32,32)</schedule>. "
+                        "To stop, reply <schedule>no_further_transformations</schedule>."
                     )
                 print_compiler_message(response_id, compiler_response)
                 last_line, full_message, tokens_usage = get_LLM_response(compiler_response, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
@@ -279,7 +275,7 @@ for benchmark_path in benchmark_paths:
                     )
                     llm_sched_strs_dict[llm_sched_str] = compiler_response
                 else:
-                    compiler_response = "You already suggested " + llm_sched_str + ". The compiler's response was:\n" + llm_sched_strs_dict[llm_sched_str]
+                    compiler_response = "Already tried " + llm_sched_str + ": " + llm_sched_strs_dict[llm_sched_str]
 
                 print_compiler_message(response_id, compiler_response)
                 last_line, full_message, tokens_usage = get_LLM_response(compiler_response, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)

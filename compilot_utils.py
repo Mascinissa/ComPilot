@@ -180,9 +180,8 @@ def _resolve_comp(comp_id, compute_blocks_IDs, transf):
     clear InvalidScheduleError if the comp_ID does not exist in the program."""
     if comp_id not in compute_blocks_IDs:
         raise InvalidScheduleError(
-            f'Unknown computation ID "{comp_id}" in "{transf}". The valid '
-            f'computation IDs for this program are: {_valid_comp_ids_str(compute_blocks_IDs)}. '
-            f'Use one of these IDs exactly as they appear in the loop nest annotations.'
+            f'Unknown computation ID "{comp_id}" in "{transf}". '
+            f'Valid IDs: {_valid_comp_ids_str(compute_blocks_IDs)}.'
         )
     return compute_blocks_IDs[comp_id][0]
 
@@ -193,26 +192,23 @@ def _parse_level(loop_token, real_comp_name, schedule, transf, comp_id):
     descriptive InvalidScheduleError on any problem."""
     if not loop_token or loop_token[0] != 'L':
         raise InvalidScheduleError(
-            f'Invalid loop level "{loop_token}" in "{transf}": a loop level must be written '
-            f'as the letter L followed by its depth (e.g. L0 for the outermost loop, L1 for '
-            f'the next one). Use L-1 to refer to the innermost loop.'
+            f'Invalid loop level "{loop_token}" in "{transf}": use L<depth>, '
+            f'e.g. L0 (outermost) or L-1 (innermost).'
         )
     try:
         level = int(loop_token[1:])
     except ValueError:
         raise InvalidScheduleError(
-            f'Invalid loop level "{loop_token}" in "{transf}": the value after L must be an '
-            f'integer (e.g. L0, L1, L2). Use L-1 to refer to the innermost loop.'
+            f'Invalid loop level "{loop_token}" in "{transf}": L must be followed by an '
+            f'integer (L0, L1, ..., or L-1 for the innermost loop).'
         )
     innermost = get_innermost_level(real_comp_name, schedule)
     if level == -1:
         return innermost
     if level < 0 or level > innermost:
-        depth = innermost + 1
         raise InvalidScheduleError(
-            f'Loop level {loop_token} does not exist for {comp_id} in "{transf}". '
-            f'{comp_id} is enclosed by {depth} loop level(s), so its valid loop levels are '
-            f'L0 (outermost) to L{innermost} (innermost). You can also use L-1 for the innermost loop.'
+            f'Loop level {loop_token} does not exist for {comp_id} in "{transf}": '
+            f'valid levels are L0 to L{innermost} (or L-1 for the innermost).'
         )
     return level
 
@@ -224,16 +220,15 @@ def _parse_call_args(transf_inst, transf_id, expected_n, transf, usage_example):
     if not (len(transf_inst) > len(transf_id)
             and transf_inst[len(transf_id)] == '(' and transf_inst[-1] == ')'):
         raise InvalidScheduleError(
-            f'The command "{transf}" is malformed: arguments must be enclosed in parentheses. '
-            f'Expected format: {usage_example}.'
+            f'Malformed command "{transf}": arguments must be in parentheses. Expected: {usage_example}.'
         )
     params = transf_inst[len(transf_id) + 1:-1]
     split_params = params.split(',')
     non_empty = [p for p in split_params if p != '']
     if len(split_params) != expected_n or len(non_empty) != expected_n:
         raise InvalidScheduleError(
-            f'The command "{transf}" has the wrong number of arguments: expected exactly '
-            f'{expected_n}, but got {len(non_empty)}. Expected format: {usage_example}.'
+            f'Wrong number of arguments in "{transf}": expected {expected_n}, got '
+            f'{len(non_empty)}. Expected: {usage_example}.'
         )
     return split_params
 
@@ -244,8 +239,7 @@ def _parse_int_arg(token, transf, what='factor'):
         return int(token)
     except (ValueError, TypeError):
         raise InvalidScheduleError(
-            f'Invalid {what} "{token}" in "{transf}": {what}s must be integers '
-            f'(e.g. 4, 16, 32, 64).'
+            f'Invalid {what} "{token}" in "{transf}": must be an integer.'
         )
     
 import openai
@@ -404,10 +398,8 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
     for transf_idx,transf in enumerate(llm_transfs):
         if transf.count('.') != 1:
             raise InvalidScheduleError(
-                f'The command "{transf}" is malformed: each transformation must have the form '
-                f'comp_ID.Transformation(arguments), with exactly one dot separating the '
-                f'computation ID from the transformation, e.g. comp00.Parallelize(L0). '
-                f'If you meant to combine several transformations, join them with "+".'
+                f'Malformed command "{transf}": expected comp_ID.Transformation(args), '
+                f'e.g. comp00.Parallelize(L0). Combine transformations with "+".'
             )
         comp_id, transf_inst = tuple(transf.split('.'))
         real_comp_name = _resolve_comp(comp_id, compute_blocks_IDs, transf)
@@ -419,16 +411,13 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
             second_comp_real_name = _resolve_comp(second_comp_id, compute_blocks_IDs, transf)
             if second_comp_real_name == real_comp_name:
                 raise InvalidScheduleError(
-                    f'Cannot fuse {comp_id} with itself in "{transf}". Fusion merges two '
-                    f'different computation blocks; the two comp_IDs must be distinct.')
+                    f'Cannot fuse {comp_id} with itself in "{transf}": the two computation IDs must be distinct.')
             loop_level = _parse_level(split_transf_params[1], real_comp_name, schedule, transf, comp_id)
             second_innermost = get_innermost_level(second_comp_real_name, schedule)
             if loop_level > second_innermost:
                 raise InvalidScheduleError(
-                    f'Cannot fuse at loop level L{loop_level} in "{transf}": computation '
-                    f'{second_comp_id} only has loop levels L0 to L{second_innermost}, so it has no '
-                    f'loop at L{loop_level}. Fusion must be applied at a level that exists in both '
-                    f'computations (fuse at the deepest level they share).')
+                    f'Cannot fuse at L{loop_level} in "{transf}": {second_comp_id} only has levels '
+                    f'L0 to L{second_innermost}. Fuse at a level shared by both computations.')
             loop_id1 = (real_comp_name,loop_level)
             loop_id2 = (second_comp_real_name,loop_level)
             new_optim = tiramisu_actions.Fusion([loop_id1,loop_id2])
@@ -441,10 +430,8 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
             loop_level = _parse_level(split_transf_params[0], real_comp_name, schedule, transf, comp_id)
             if loop_level>=2:
                 raise InvalidScheduleError(
-                    f'Parallelization in "{transf}" targets loop level L{loop_level}, but only '
-                    f'outer loops (L0, or L1) should be parallelized. Parallelizing deep loops '
-                    f'(L2 and beyond) adds threading overhead that outweighs the benefit; '
-                    f'parallelize an outer loop instead.')
+                    f'Parallelization in "{transf}" targets L{loop_level}, but only outer loops '
+                    f'(L0 or L1) should be parallelized (deeper loops add too much threading overhead).')
             loop_id = (real_comp_name, loop_level)
             new_optim = tiramisu_actions.Parallelization([loop_id])
             schedule = validate_optim_and_add_to_schedule(schedule, new_optim, llm_transfs[:transf_idx+1])
@@ -500,9 +487,8 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
 
             if skewing_factors is None:
                 raise InvalidScheduleError(
-                    f'The solver could not find valid skewing factors for "{transf}". '
-                    f'Skewing is only useful/possible on a pair of perfectly nested loops that '
-                    f'carry dependencies; try skewing a different loop pair, or drop the skewing.')
+                    f'No valid skewing factors found for "{transf}"; try a different loop pair '
+                    f'or drop the skewing.')
             factor1, factor2 = skewing_factors
             schedule.add_optimizations([tiramisu_actions.Skewing([loop_id1,loop_id2,factor1,factor2])])
 
@@ -546,19 +532,16 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
             unroll_limit = _over_unroll_limit(real_comp_name, loop_level, schedule)
             if unroll_limit is not None and factor > unroll_limit:
                 raise InvalidScheduleError(
-                    f'Unrolling factor {factor} in "{transf}" is larger than the trip count '
-                    f'({unroll_limit}) of the loop. Unrolling by more than the number of '
-                    f'iterations is pointless and makes the code generator fail; use a factor '
-                    f'between 2 and {unroll_limit} (ideally a divisor of the loop extent).')
+                    f'Unrolling factor {factor} in "{transf}" exceeds the loop trip count '
+                    f'({unroll_limit}); use a factor between 2 and {unroll_limit}.')
             loop_id = (real_comp_name,loop_level)
             new_optim = tiramisu_actions.Unrolling([loop_id,factor])
             schedule = validate_optim_and_add_to_schedule(schedule, new_optim, llm_transfs[:transf_idx+1])
         else:
             transf_name = transf_inst.split('(')[0]
             raise InvalidScheduleError(
-                f'Unknown transformation "{transf_name}" in "{transf}". The supported '
-                f'transformations are: Fuse, Interchange, Parallelize, Tile2D, Tile3D, Unroll, '
-                f'Skew, and Reverse. Please use one of these exactly.')
+                f'Unknown transformation "{transf_name}" in "{transf}". Supported: Fuse, '
+                f'Interchange, Parallelize, Tile2D, Tile3D, Unroll, Skew, Reverse.')
 
 
     return schedule
@@ -702,11 +685,9 @@ def _localize_illegality(llm_sched_str, tiramisu_program, annots, compute_blocks
     except Exception:
         return ''
     if individually_illegal:
-        return (' Isolating the transformations shows that the following are already illegal on '
-                'their own: ' + ', '.join(f'"{t}"' for t in individually_illegal) + '.')
+        return ' Illegal on their own: ' + ', '.join(f'"{t}"' for t in individually_illegal) + '.'
     if individually_legal and len(individually_legal) == len(transfs):
-        return (' Each transformation is legal on its own, so the illegality stems from their '
-                'combination rather than a single one.')
+        return ' Each transformation is legal alone; the combination is the problem.'
     return ''
 
 
@@ -723,26 +704,21 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
         # A schedule that is syntactically/structurally invalid. Caught before any
         # compiler call and reported to the LLM with a precise, actionable reason.
         explored_scheds.append((llm_sched_str, 'invalid', False, e.message))
-        message = (f'The schedule {llm_sched_str} is invalid and was not applied. {e.message} '
-                   f'None of its transformations were applied; please fix the issue and resend '
-                   f'the full corrected schedule.')
+        message = f'Invalid schedule "{llm_sched_str}" (not applied). {e.message}'
         logger.info(message)
         update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'invalid', e.message))
         return message
     except KnownScheduleCreationCrash as e:
         explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc()))
-        message = (f'The schedule {llm_sched_str} could not be applied. {e.message} '
-                   f'Please adjust the schedule accordingly.')
+        message = f'"{llm_sched_str}" could not be applied. {e.message}'
         logger.exception(message)
         update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
         return message
     except Exception as e:
         explored_scheds.append((llm_sched_str, 'crash', False, traceback.format_exc()))
-        message = (f'The schedule {llm_sched_str} made the compiler crash while it was being built '
-                   f'({type(e).__name__}). This usually happens with aggressive or unusual '
-                   f'combinations (e.g. large unrolling/tiling factors, or tiling then unrolling the '
-                   f'same loop). Consider reducing the tiling/unrolling factors, reordering the '
-                   f'transformations (apply fusion first and unrolling last), or dropping one of them.')
+        message = (f'"{llm_sched_str}" crashed the compiler while building ({type(e).__name__}). '
+                   f'Likely an aggressive combination — reduce tiling/unrolling factors, apply '
+                   f'fusion first and unrolling last, or drop a transformation.')
         logger.exception(message)
         update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
         return message
@@ -750,10 +726,8 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
         is_legal = schedule.is_legal()
     except Exception as e:
         explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc()))
-        message = (f'The schedule {llm_sched_str} caused the compiler to crash during the legality '
-                   f'check. This can happen with unusual transformation combinations; consider '
-                   f'simplifying the schedule or reordering its transformations (for instance, '
-                   f'applying fusion first and unrolling last).')
+        message = (f'"{llm_sched_str}" crashed the compiler during the legality check. '
+                   f'Simplify or reorder the schedule (fusion first, unrolling last).')
         logger.exception(message)
         update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
         return message
@@ -764,31 +738,27 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
             explored_scheds.append((str(schedule), 'ran', False, exec_time)) 
             
             if speedup>=1:
-                message = f'{llm_sched_str} was legal and yielded a speedup of {round(speedup,2)}x'
+                message = f'{llm_sched_str} ran successfully: speedup {round(speedup,2)}x.'
             else:
-                message = f'{llm_sched_str} was legal and yielded a speedup of {round(speedup,2)}x (i.e. a slowdown of {round(1/speedup,2)}x)'
+                message = f'{llm_sched_str} ran successfully: speedup {round(speedup,2)}x (slowdown {round(1/speedup,2)}x).'
 
             update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'ran', exec_time)) 
             return message
                 
         except ScheduleExecutionCrashed as e:
             explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc()))
-            message = (f'The schedule {llm_sched_str} was legal but crashed at runtime '
-                       f'(segmentation fault) during execution. This often comes from an overly '
-                       f'large unrolling or tiling factor, or unrolling a non-innermost loop. '
-                       f'Consider reducing the factors, unrolling only the innermost loop (L-1), '
-                       f'or removing the transformation likely responsible.')
+            message = (f'"{llm_sched_str}" was legal but segfaulted at runtime. Often caused by a '
+                       f'too-large unroll/tiling factor or unrolling a non-innermost loop — reduce '
+                       f'factors or unroll only the innermost loop (L-1).')
             logger.exception(message)
             update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
             return message
 
         except Exception as e:
             explored_scheds.append((str(schedule), 'crash', False, traceback.format_exc()))
-            message = (f'The schedule {llm_sched_str} was legal but crashed at runtime during '
-                       f'execution ({type(e).__name__}). This often comes from an overly large '
-                       f'unrolling or tiling factor, or unrolling a non-innermost loop. Consider '
-                       f'reducing the factors, unrolling only the innermost loop (L-1), or removing '
-                       f'the transformation likely responsible.')
+            message = (f'"{llm_sched_str}" was legal but crashed at runtime ({type(e).__name__}). '
+                       f'Often caused by a too-large unroll/tiling factor or unrolling a non-innermost '
+                       f'loop — reduce factors or unroll only the innermost loop (L-1).')
             logger.exception(message)
             update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'crash', traceback.format_exc()))
 
@@ -798,10 +768,9 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
         explored_scheds.append((str(schedule), 'illegal', False, None))
         localization_hint = (_localize_illegality(llm_sched_str, tiramisu_program, annots, compute_blocks_IDs)
                              if LOCALIZE_ILLEGALITY else '')
-        message = (f'The schedule {llm_sched_str} is illegal: it violates the data dependencies of '
-                   f'the program (it would change the computed result), so it was not executed.'
-                   f'{localization_hint} To make progress, revoke or replace the transformation(s) '
-                   f'responsible for the violation, or try applying them in a different order.')
+        message = (f'"{llm_sched_str}" is illegal: it violates the program\'s data dependencies, so '
+                   f'it was not executed.{localization_hint} Revoke or replace the responsible '
+                   f'transformation(s), or reorder them.')
         update_lookup_file(llm_sched_str, prog_name, 'compiler_responses', (message, 'illegal', None))
         return message
 
@@ -911,22 +880,22 @@ def is_new_optim_valid(prev_schedule, new_optim, llm_transfs):
         
     elif new_optim.is_skewing():
         if not are_iterators_consecutive(new_optim.iterators):
-            raise InvalidScheduleError(f'Skewing cannot be applied on non-consecutive loops (command "{llm_transfs[-1]}"). Skewing requires two adjacent loop levels (e.g. L1 and L2).')
+            raise InvalidScheduleError(f'Skewing needs two adjacent loop levels (e.g. L1, L2), not "{llm_transfs[-1]}".')
         if not are_iterators_perfectly_nested(prev_schedule.tree, new_optim.iterators):
-            raise InvalidScheduleError(f'Skewing cannot be applied on imperfectly nested loops (command "{llm_transfs[-1]}")')
+            raise InvalidScheduleError(f'Skewing requires perfectly nested loops (command "{llm_transfs[-1]}").')
         # check if solution found?
 
     elif new_optim.is_interchange():
         iterators = sorted(new_optim.params, key=lambda x:x[1])
         if not are_iterators_perfectly_nested(prev_schedule.tree, iterators):
-            raise InvalidScheduleError(f'Interchange cannot be applied on imperfectly nested loops (command "{llm_transfs[-1]}")')
+            raise InvalidScheduleError(f'Interchange requires perfectly nested loops (command "{llm_transfs[-1]}").')
 
         if has_interchange_on_parallelized_loops(prev_schedule, new_optim, llm_transfs):
             return False
 
     elif new_optim.is_any_tiling():
         if not are_iterators_consecutive(new_optim.iterators):
-            raise InvalidScheduleError(f'Tiling cannot be applied on non-consecutive loops (command "{llm_transfs[-1]}"). Tiling requires adjacent loop levels (e.g. Tile2D on L1 and L2).')
+            raise InvalidScheduleError(f'Tiling needs adjacent loop levels (e.g. L1, L2), not "{llm_transfs[-1]}".')
 
         if has_tiling_above_parallelized_loops(prev_schedule, new_optim, llm_transfs):
             return False
@@ -944,7 +913,7 @@ def unrollings_applied_last_in_branch(prev_schedule, new_optim, llm_transfs):
         if optim.is_unrolling():
             unrolled_comps = optim.comps
             if any(comp in unrolled_comps for comp in new_optim_comps):
-                raise InvalidScheduleError(f'{llm_transfs[-1]} cannot be applied after {llm_transfs[i]}: unrolling must be the last transformation applied to a computation. Move every Unroll(...) for these computations to the end of the schedule.')
+                raise InvalidScheduleError(f'{llm_transfs[-1]} cannot follow {llm_transfs[i]}: unrolling must be the last transformation on a computation — put all Unroll(...) at the end.')
     return True
 
 def unrollings_applied_once_in_branch(prev_schedule, new_optim, llm_transfs):
@@ -956,7 +925,7 @@ def unrollings_applied_once_in_branch(prev_schedule, new_optim, llm_transfs):
         if optim.is_unrolling():
             unrolled_comps = optim.comps
             if any(comp in unrolled_comps for comp in new_optim_comps):
-                raise InvalidScheduleError(f'Unrolling {llm_transfs[-1]} cannot be applied on already unrolled computations (previously unrolled by {llm_transfs[i]})')
+                raise InvalidScheduleError(f'Cannot unroll again: {llm_transfs[-1]} targets computations already unrolled by {llm_transfs[i]}.')
     return True
 
 def has_unroll_factor_1(prev_schedule, new_optim, llm_transfs):
@@ -1001,7 +970,7 @@ def has_interchange_on_parallelized_loops(prev_schedule, new_optim, llm_transfs)
             parallel_comps = optim.comps
             # if it affects parallelized comps and one of the interchanged levels is parallelized, this can cause a wrong legality evaluation
             if any(comp in interchange_comps for comp in parallel_comps) and (interchanged_levels[0]==parallel_level or interchanged_levels[1]==parallel_level):
-                raise InvalidScheduleError(f'Interchange {llm_transfs[-1]} cannot be applied after parallelization on the same loop (parallelized by {llm_transfs[i]}). You might consider reordering the transformations.')
+                raise InvalidScheduleError(f'Interchange {llm_transfs[-1]} cannot follow parallelization of the same loop ({llm_transfs[i]}); reorder them.')
     return False
 
 def has_tiling_above_parallelized_loops(prev_schedule, new_optim, llm_transfs):
@@ -1014,7 +983,7 @@ def has_tiling_above_parallelized_loops(prev_schedule, new_optim, llm_transfs):
             parallel_comps = optim.comps
             # if it affects parallelized comps and and the tiling level is higher than the parallel one, this can cause a wrong legality evaluation since new loops will be created while the parallel tag stays in the same level
             if any(comp in tiled_comps for comp in parallel_comps) and (first_tiled_level<parallel_level):
-                raise InvalidScheduleError(f'Tiling {llm_transfs[-1]} cannot be applied on levels above parallelized loops (parallelized by {llm_transfs[i]}). You might consider reordering the transformations.')
+                raise InvalidScheduleError(f'Tiling {llm_transfs[-1]} cannot target levels above a parallelized loop ({llm_transfs[i]}); reorder them.')
     return False
 
 def validate_optim_and_add_to_schedule(prev_schedule, new_optim, llm_transfs):
