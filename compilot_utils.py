@@ -1,3 +1,15 @@
+"""ComPilot core utilities.
+
+Everything the driver (compilot.py) needs, grouped by concern:
+  - rendering a program's annotations as an anonymized C loop nest for the LLM;
+  - parsing an LLM-proposed schedule string into a validated TiraLib Schedule,
+    turning malformed proposals into precise validity errors before any compiler
+    call (InvalidScheduleError);
+  - running the compiler backend and turning each outcome (invalid / illegal /
+    crash / ran) into concise, actionable feedback;
+  - a small on-disk cache of results for previously seen schedules;
+  - the LLM client and the two interaction formats (conversational and compact).
+"""
 from sympy import simplify
 import re
 from string import ascii_lowercase
@@ -12,6 +24,8 @@ import traceback
 import json
 
 import numpy as np
+import openai
+from openai import OpenAI
 
 def parse_isl_map(isl_map: str):
     # Extract the computation and buffer parts
@@ -154,7 +168,7 @@ class ScheduleExecutionCrashed(Exception):
     pass
 
 class KnownScheduleCreationCrash(Exception):
-    """Exception class for know schedule creation errors."""
+    """Base class for known, explainable schedule-creation errors."""
 
     def __init__(self, message):
         self.message = message
@@ -170,6 +184,7 @@ class InvalidScheduleError(KnownScheduleCreationCrash):
     pass
 
 
+# --- Schedule-string parsing helpers (turn malformed proposals into clear errors) ---
 def _valid_comp_ids_str(compute_blocks_IDs):
     """Human-readable, comma-separated list of the valid comp_IDs of a program."""
     return ', '.join(sorted(compute_blocks_IDs.keys()))
@@ -242,12 +257,10 @@ def _parse_int_arg(token, transf, what='factor'):
             f'Invalid {what} "{token}" in "{transf}": must be an integer.'
         )
     
-import openai
-from openai import OpenAI
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url = os.getenv("BASE_URL"), max_retries=10)
+# --- Module setup: LLM client, TiraLib backend, caches, logging ---
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"), base_url=os.getenv("BASE_URL"), max_retries=10)
 
-
-BaseConfig.init(config_yaml= os.getenv("TIRALIB_DIR")+"/config.yaml")
+BaseConfig.init(config_yaml=os.getenv("TIRALIB_DIR") + "/config.yaml")
 
 lookup_files_dir = './lookup_dir_'+os.getenv("LOOKUP_DIR_SUFFIX")
 Path(lookup_files_dir).mkdir(exist_ok=True)
@@ -269,13 +282,14 @@ RESPONSE_LOOKUP_ENABLED = os.getenv("USE_RESPONSE_LOOKUP", "1") != "0"
 # on large programs, so it is off by default. Controlled by LOCALIZE_ILLEGALITY.
 LOCALIZE_ILLEGALITY = os.getenv("LOCALIZE_ILLEGALITY", "0") == "1"
 
-logger = logging.getLogger('__name__')
+logger = logging.getLogger(__name__)
 console_handler = logging.StreamHandler()
 console_handler.setFormatter(
     logging.Formatter("|%(asctime)s|%(levelname)s| %(message)s")
 )
 logger.addHandler(console_handler)
 
+# --- Rendering a program's annotations as an anonymized C loop nest ---
 def expression_json_to_str(expr, iterator_names=None):
     operators = {
         'add': ('+', 2),  # Binary
@@ -321,7 +335,6 @@ def expression_json_to_str(expr, iterator_names=None):
             return str(int(expr['str'])) if 'int' in expr['dtype'] else str(float(expr['str']))
             
 def expression_str_to_c_expression(expression_str):
-    # print(expression_str)
     try:
         simplified_str = str(simplify(expression_str))
     except TypeError: # sympy can crash when there are casts or le 
@@ -388,6 +401,7 @@ def annots_to_c_comp(comp_name, program_annotations):
     rhs_str = expression_json_to_c_expression(comp_dict['simplified_expression_representation'], comp_dict['iterators'])
     return lhs_str + ' = ' + rhs_str
 
+# --- Building a validated TiraLib Schedule from an LLM-proposed schedule string ---
 def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_blocks_IDs=None):
     """Parse an LLM schedule string into a TiraLib Schedule, validating each
     transformation and raising InvalidScheduleError with an actionable message on
@@ -546,6 +560,7 @@ def llm_sched_str_to_sched(llm_sched_str, program, program_annots, compute_block
 
     return schedule
 
+# --- Loop-extent helpers and the over-unrolling guard ---
 def get_innermost_level(real_comp_name, schedule):
     return schedule.tree.get_iterator_of_computation(real_comp_name).level
 
@@ -611,6 +626,7 @@ def _over_unroll_limit(real_comp_name, loop_level, schedule):
             return level_extent
     return _max_enclosing_static_extent(real_comp_name, schedule)
 
+# --- On-disk cache of results for previously seen schedules ---
 def check_in_lookup_file(llm_sched_str, prog_name, query_type):
     assert query_type in ['initial_exec', 'compiler_responses', 'skewing_solver']
     if query_type == 'compiler_responses' and not RESPONSE_LOOKUP_ENABLED:
@@ -661,6 +677,7 @@ def update_lookup_file(llm_sched_str, prog_name, query_type, value):
         with open(prog_lookup_file, 'wb') as f:
             pickle.dump(lookup_dict, f)
 
+# --- Compiler backend and feedback generation ---
 def _localize_illegality(llm_sched_str, tiramisu_program, annots, compute_blocks_IDs):
     """For a compound schedule found illegal, help the LLM localize the culprit by
     legality-checking each of its transformations on its own. Returns a short
@@ -806,6 +823,7 @@ def get_compiler_response(llm_sched_str, tiramisu_program, annots, compute_block
 
 
 
+# --- LLM client: transient-error retry with backoff, and the interaction turns ---
 # Error types that are always transient (network blips, timeouts, rate limits, 5xx).
 _TRANSIENT_LLM_ERRORS = (
     openai.APIConnectionError,
@@ -862,31 +880,35 @@ def _chat_completion(messages, max_attempts=60, **kwargs):
 
 
 def get_LLM_response(compiler_response, messages, top_p = 1, temperature=1, enable_thinking = True):
+    """Conversational turn: append the compiler feedback, query the LLM, append its
+    reply. `messages` grows in place (the full transcript is resent each turn)."""
     messages.append({"role": "user", "content": compiler_response})
-    new_assitant_message, tokens_usage = _chat_completion(
+    new_assistant_message, tokens_usage = _chat_completion(
         messages,
         top_p=top_p,
         temperature=temperature,
         extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
     )
-    messages.append({"role": "assistant", "content": new_assitant_message})
-    last_line = new_assitant_message.splitlines()[-1] if new_assitant_message else ''
-    return last_line, new_assitant_message, tokens_usage
+    messages.append({"role": "assistant", "content": new_assistant_message})
+    last_line = new_assistant_message.splitlines()[-1] if new_assistant_message else ''
+    return last_line, new_assistant_message, tokens_usage
 
 
-def initialize_conversation(system_intructions, first_message, temperature=0, seed=42, enable_thinking=True):
+def initialize_conversation(system_instructions, first_message, temperature=0, seed=42, enable_thinking=True):
+    """Start a dialogue: send the system prompt and the first (program-analysis)
+    message, and return (messages, analysis_reply, tokens_usage)."""
     messages=[
-        {"role": "system", "content": system_intructions},
+        {"role": "system", "content": system_instructions},
         {"role": "user", "content": first_message}
     ]
-    new_assitant_message, tokens_usage = _chat_completion(
+    new_assistant_message, tokens_usage = _chat_completion(
         messages,
         temperature=temperature,
         seed=seed,
         extra_body={"chat_template_kwargs": {"enable_thinking": enable_thinking}},
     )
-    messages.append({"role": "assistant", "content": new_assitant_message})
-    return messages, new_assitant_message, tokens_usage
+    messages.append({"role": "assistant", "content": new_assistant_message})
+    return messages, new_assistant_message, tokens_usage
 
 
 # ----------------------------------------------------------------------------
@@ -963,6 +985,7 @@ def get_compact_LLM_response(system_instructions, compact_user_message, top_p=1,
     return last_line, new_assistant_message, tokens_usage
 
 
+# --- Console output ---
 def print_llm_message(id, message, as_markdown=False):
     if as_markdown:
         display_markdown(f'{id}⬅️ Assistant: '+ message + '\n', raw=True)    
@@ -975,6 +998,7 @@ def print_compiler_message(id, message, as_markdown=False):
     else:
         print(f'\033[1m{id}➡️ Compiler:\033[0m '+ message + '\n')  
 
+# --- Schedule-validity predicates (checked while a Schedule is constructed) ---
 def is_new_optim_valid(prev_schedule, new_optim, llm_transfs):
     if new_optim.is_unrolling():
        

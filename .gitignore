@@ -160,3 +160,11 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+
+# --- ComPilot run artifacts ---
+# Cached compiler results for already-tried schedules
+lookup_dir_*/
+# Experiment outputs (results JSON/CSV, checkpoints); base_results_dir defaults to ./results
+results/
+live_results_*.csv
+*.pkl

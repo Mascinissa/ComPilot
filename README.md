@@ -1,74 +1,126 @@
 # ComPilot: LLM-Guided Loop Optimization via Agentic Auto-Scheduling
 
-ComPilot (Compiler Pilot) is an automated loop optimization framework that uses off-the-shelf Large Language Models (LLMs) as interactive optimization agents. It proposes loop transformations to a compiler in a closed feedback loop. By interacting iteratively, the LLM refines its strategy based on compiler feedback (validity, legality, and execution speedups), driving performance improvements without the need for gradient updates or fine-tuning.
+ComPilot uses a general-purpose large language model as the search policy for loop optimization. The model proposes sequences of loop transformations for a given loop nest; the Tiramisu polyhedral compiler checks each proposal for legality, executes the legal ones, and reports the measured speedup. The model uses that feedback to decide what to try next, and the process repeats until it stops or a turn budget is reached. The model is used as-is through a standard chat API, with no fine-tuning or gradient updates.
 
-This project is the official implementation of the paper:
-**Agentic Auto-Scheduling: An Experimental Study of LLM-Guided Loop Optimization** (PACT 2025).
-*Authors: Massinissa Merouani, Islem Kara Bernou, Riyadh Baghdadi (NYU Abu Dhabi)*
+This repository is the reference implementation for the paper *Agentic Auto-Scheduling: An Experimental Study of LLM-Guided Loop Optimization* (PACT 2025), by Massinissa Merouani, Islem Kara Bernou, and Riyadh Baghdadi (NYU Abu Dhabi).
 
 ---
 
-## Architecture Overview
+## How it works
 
-The system runs an **optimization dialogue** between an LLM agent and a polyhedral compiler (Tiramisu).
-1. **Context Initializer**: Prepares the LLM with the C++ loop nest and initial execution time.
-2. **Interaction Loop Handler**: Connects LLM responses to compiler API calls and generates feedback based on successful execution or errors.
-3. **Compiler Backend (Tiramisu)**: Processes semantic validity, legality (via polyhedral dependence analysis), generates code, and evaluates the performance on target hardware.
+Each benchmark is optimized through a dialogue between the model and the compiler:
 
-## Features
+1. The loop nest is shown to the model as anonymized C code, annotated with an ID per computation and accompanied by its measured baseline runtime. The model is first asked to analyze the program.
+2. On each turn the model proposes a schedule (a sequence of transformations). ComPilot parses it, and either rejects a malformed or structurally invalid proposal immediately with a specific reason, or applies it through TiraLib.
+3. Tiramisu checks legality by polyhedral dependence analysis. A legal schedule is compiled and timed, and its speedup over the baseline is returned to the model; an illegal or failing one is returned with the reason instead.
 
-- **Multi-run Best-of-K Strategy**: Embraces LLM stochasticity by allowing parallel exploration paths and selecting the most performant schedules.
-- **Nine Transformation Primitives**: Fusion, Interchange, Parallelization, 2D/3D Tiling, Unrolling, Skewing, Reversal.
-- **Robust Error Handling**: Syntactic and semantic feedback helps the LLM recover from poor schedule choices or invalid primitives.
-- **Hardware Agnostic LLM Context**: Provides the LLM with the active hardware specs dynamically.
+The transformations available to the model are fusion, interchange, parallelization, 2D and 3D tiling, unrolling, skewing, and reversal.
+
+Rejected proposals are returned with a concrete cause (unknown computation ID, out-of-range loop level, wrong argument count, dependence violation, and so on) rather than a generic error, and for an illegal combination of transformations ComPilot can optionally point out which one is at fault. Correctness is enforced first by a lightweight validity check before any compiler call, then by Tiramisu's polyhedral legality analysis. The system is built for long unattended runs: LLM requests retry on transient failures, one benchmark's crash never aborts the rest, and the dialogue is checkpointed each turn so an interrupted run resumes where it stopped. Independent runs launched with distinct `--run-id` values give a best-of-K search, and two interaction formats are supported, a conversational transcript and a token-efficient compact mode (see [Interaction modes](#interaction-modes)).
 
 ---
 
 ## Setup & Dependencies
 
-*This project relies heavily on the Tiramisu Compiler API and python dependencies (like `openai` and `pyyaml`). Ensure your environment has Tiramisu compiled and accessible.*
+ComPilot drives the [Tiramisu](https://github.com/Tiramisu-Compiler/tiramisu) polyhedral compiler through **TiraLib**. Both must be built and available before running ComPilot.
 
-1. Clone this repository.
-2. Open `config.yaml` and update the required paths and LLM configuration parameters to match your setup:
-   - `llm_id`: The LLM model to query (e.g. `gemini-2.0-flash`, `gpt-4o`).
-   - `openai_api_key` & `base_url`: Pointing to your LLM provider.
-   - `benchmarks_dir`: Path to your Polybench (or equivalent) C++ generator files.
-   - `tiralib_dir`: Path to the compiled TiraLib.
+1. Build Tiramisu and TiraLib, and make sure TiraLib's `config.yaml` points to your Tiramisu install.
+2. Install the Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Copy/edit `config.yaml` (see below) to match your setup.
+
+---
+
+## Configuration
+
+All settings live in `config.yaml`:
+
+| Key | Description |
+|---|---|
+| `llm_id` | Model id served by your OpenAI-compatible endpoint (e.g. `gpt-4o`, `gemini-2.0-flash`, a local vLLM/Ollama model). |
+| `base_url` | Base URL of the OpenAI-compatible API. |
+| `openai_api_key` | API key for the endpoint (any non-empty string for most local servers). |
+| `interaction_mode` | `conversational` (default) or `compact` — see [Interaction modes](#interaction-modes). |
+| `benchmarks_dir` | Directory of benchmark folders; each `<name>/` must contain `<name>_generator.cpp`. |
+| `tiralib_dir` | Path to a compiled TiraLib checkout. |
+| `lookup_dir_suffix` | Cache of already-tried schedules is stored under `lookup_dir_<suffix>/`. |
+| `base_results_dir` | Where results and checkpoints are written. |
+| `max_llm_responses` | Hard cap on LLM turns per benchmark. |
+| `min_nb_suggestions` | Keep nudging the LLM to explore until it has tried at least this many schedules. |
+| `nb_exec_init` / `min_runs_scheds` / `max_runs_scheds` / `time_budget_factor_scheds` | Execution-measurement budgets. |
+| `temperature` / `top_p` / `nb_responses` / `enable_thinking` | LLM sampling settings. |
+| `use_response_lookup` | Reuse cached compiler feedback for previously-seen schedules. Set to `false` to force fresh feedback for every schedule (e.g. when comparing feedback wording or running independent stochastic runs). The numeric caches (initial execution time, skewing factors) are always kept. |
+
+> **Security note:** do not commit real endpoint URLs or credentials. Keep `config.yaml` pointed at a placeholder and override it locally.
+
+---
+
+## Interaction modes
+
+Set `interaction_mode` in `config.yaml`:
+
+- **`conversational`** (default) — a back-and-forth transcript. Every turn resends the full history (system prompt + all prior suggestions and feedback), so the prompt grows with each iteration.
+- **`compact`** — every turn sends only two messages: the system prompt and a single message holding the loop nest, a *frozen* one-time program analysis, and a running **exploration log** (a de-duplicated, numbered summary of every schedule tried and its outcome, plus the current top schedules). The LLM's next suggestion is evaluated and appended to the log.
+
+Both modes reach comparable speedups. Compact mode keeps the per-turn prompt small and roughly constant, so its **prompt-token cost grows far more slowly** with the number of turns. It trades this for slightly more reasoning per turn (the model re-reads the state each time), so the net token savings grow with the dialogue length — modest for very short runs, substantial for long ones. Compact runs are tagged with a `_compact` suffix on the experiment name.
 
 ---
 
 ## Usage
 
-### Single Exploration
-To start a single agentic optimization run on the provided loop nest benchmarks, simply configure `config.yaml` and run:
+### Single exploration
 
 ```bash
-python compilot.py --experiment-name "my_first_run"
+python compilot.py --experiment-name my_first_run
 ```
 
-### Multi-Run Best-of-K (SLURM / HPC Deployment)
-Because ComPilot uses a Best-of-K strategy to find peak optimizations, executing multiple independent dialogues simultaneously is recommended (K=5 is often ideal).
+### Best-of-K (multiple independent runs)
 
-We provide `run_duplicated_compilot.sh` to seamlessly submit and monitor multiple Slurm jobs:
+Because different runs converge to different optima, running several independent dialogues and keeping the best schedule is recommended (K=5 is a good default). Launch runs with distinct `--run-id` values (they can run in parallel; they safely share the schedule cache):
 
 ```bash
-# Starts K=5 parallel optimization dialogues using Slurm/Screen
-./run_duplicated_compilot.sh 5 my_experiment_prefix
+for i in $(seq 1 5); do
+  python compilot.py --experiment-name my_experiment --run-id $i &
+done
+wait
 ```
-The script uses `screen` to keep the runner alive and restarts runs automatically if they crash abruptly.
+
+### Resuming after a crash or interruption
+
+Runs are resumable out of the box. If a run is interrupted (crash, timeout, LLM outage), simply re-launch the **same command**: completed benchmarks are skipped, and any benchmark that was mid-dialogue resumes from its checkpoint in `<results_dir>/checkpoints/`.
+
+---
+
+## Output
+
+For each experiment, `base_results_dir/<experiment_name>/` contains:
+- `results_<experiment_name>.json` — full optimization dialogue, explored schedules, best schedule, timings, and token usage per benchmark.
+- `live_results_<experiment_name>.csv` — one summary row per benchmark (best speedup, counts, timing).
+- `checkpoints/` — per-benchmark resume state (auto-deleted once a benchmark finishes).
+
+### Analysis
+
+- `analyze_dialogue.py results/<...>/results_*.json` — per-benchmark breakdown of schedule outcomes (runnable / invalid / crashed), runnable-schedule rate, and best speedup (works for both interaction modes).
+- `aggregate_json_results.py -r results/<experiment_dir> --k 5` — computes the paper's aggregate metrics (COMPILOT@T and typical best-of-K) across runs.
 
 ---
 
 ## File Structure
 
-- `compilot.py`: The main script that configures the agent and runs the optimization loops for all benchmarks. 
-- `compilot_utils.py`: Contains the helper logic for parsing, compiling, error handling, and driving the Tiramisu backend.
-- `prompts.py`: Defines the context prompts and system instructions used by the LLM.
-- `config.yaml`: Centralized configuration for the LLM, thresholds, parameters, and directories.
-- `run_duplicated_compilot.sh`: A helper bash script designed for launching parallel best-of-K explorations on SLURM clusters.
-- `all_utils.py`: Additional parser and expression tree functions imported by the framework.
+- `compilot.py` — main driver: runs the optimization dialogue for every benchmark, with checkpointing/resume.
+- `compilot_utils.py` — parsing, validation, compiler feedback generation, and the TiraLib/Tiramisu backend interface.
+- `prompts.py` — the system instructions and message templates used with the LLM.
+- `config.yaml` — centralized configuration.
+- `analyze_dialogue.py` — quick per-run outcome analysis.
+- `aggregate_json_results.py` / `eval_utils.py` — aggregate metrics and evaluation utilities used for the paper's results.
 
 ## Citation
 
-If you use this code in your research, please consider citing the underlying publication:
+If you use this code in your research, please cite:
 > Merouani, M., Bernou, I. K., & Baghdadi, R. (2025). Agentic Auto-Scheduling: An Experimental Study of LLM-Guided Loop Optimization. In *Proceedings of the 2025 International Conference on Parallel Architectures and Compilation Techniques (PACT)*.
+
+## License
+
+Released under the [Apache License 2.0](LICENSE).

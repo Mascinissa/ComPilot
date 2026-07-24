@@ -1,3 +1,6 @@
+"""Prompt text used with the LLM: the system instructions, the fixed exchange
+messages, the exploration nudges, and the compact-mode instructions."""
+
 system_instructions = """
 You are a compiler optimization assistant. Your task is to iteratively explore and suggest sequences of loop transformations (i.e. a schedule) for a given C++ loop nest to minimize its execution time. You will interact iteratively with a compiler that uses the Tiramisu API.
 

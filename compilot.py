@@ -1,3 +1,15 @@
+"""ComPilot driver.
+
+Runs the optimization dialogue for every benchmark in the configured directory:
+for each program it initializes the LLM context, then iterates
+suggestion -> compile/measure -> feedback until the LLM stops or the turn cap is
+reached, keeping the fastest legal schedule. Supports two interaction formats
+(conversational and compact, see `interaction_mode` in config.yaml), per-iteration
+checkpointing for crash/interruption resume, and best-of-K via `--run-id`.
+
+Usage:
+    python compilot.py --experiment-name my_run [--run-id 1] [--config config.yaml]
+"""
 import os
 import sys
 import argparse
@@ -219,7 +231,7 @@ for benchmark_path in benchmark_paths:
             # modes) to obtain the program analysis.
             messages, full_message, tokens_usage = initialize_conversation(system_instructions, first_message, enable_thinking=enable_thinking)
             total_tokens_usage = tokens_usage
-            print_compiler_message(0, messages[0]['content']) # system instructin
+            print_compiler_message(0, messages[0]['content']) # system instructions
             print_compiler_message(1, messages[1]['content']) # first message about doing a program analysis
             print_llm_message(1, full_message) # program analysis
             analysis = full_message  # frozen once; reused by every compact-mode turn
@@ -235,12 +247,12 @@ for benchmark_path in benchmark_paths:
                 last_line, full_message, tokens_usage = get_compact_LLM_response(system_instructions, first_compact, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
                 messages.append({"role": "assistant", "content": full_message})
             else:
-                print_compiler_message(2, start_exploration_message) # ask to start explortion
+                print_compiler_message(2, start_exploration_message) # ask to start exploration
                 last_line, full_message, tokens_usage = get_LLM_response(start_exploration_message, messages, top_p=top_p, temperature=temperature, enable_thinking=enable_thinking)
             for k in total_tokens_usage: total_tokens_usage[k] += tokens_usage[k]
             print_llm_message(2, full_message) # first suggestion
 
-            llm_sched_strs_dict = dict() # a dict of llm_sched_str:compiler repsponse. Used to avoid rerunning same llm_sched_str
+            llm_sched_strs_dict = dict() # maps llm_sched_str -> compiler response, to avoid re-running the same schedule
             stop_message = False
             giveups_counter = 0
             response_id = 2

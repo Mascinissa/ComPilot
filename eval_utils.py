@@ -1,3 +1,6 @@
+"""Evaluation helpers used to compute and plot the paper's aggregate metrics
+(speedup curves over the search, geometric means, best-of-K). Imported by
+aggregate_json_results.py; not needed to run ComPilot itself."""
 import pickle
 import numpy as np
 from statistics import geometric_mean
