@@ -348,7 +348,7 @@ for benchmark_path in benchmark_paths:
             sched_str, outcome, is_lookup, data = sched[:4]
             explored_schedules_json.append({
                 "schedule": sched_str,
-                "outcome": "invalid" if outcome == "illegal" else outcome,
+                "outcome": outcome,  # 'ran' | 'invalid' | 'illegal' | 'crash'
                 "execution_time": data if outcome == "ran" else None
             })
 
@@ -358,13 +358,16 @@ for benchmark_path in benchmark_paths:
             if f.read(1) == '':
                 #if emtpy write header
                 f.write('benchmark, init_exec_time, nb_explored, nb_executed, optim_time, best_exec_time, best_speedup, best_sched,' + '\n')
-            ran_scheds = [s for s in explored_scheds if s[1]=='ran']
-            if ran_scheds:
-                best_sched = sorted(ran_scheds, key=lambda x:x[3])[0]
+            ran_scheds = [s for s in explored_scheds if s[1]=='ran']  # all executed schedules
+            # The best schedule is the fastest one that actually beats the original; if
+            # none does, the best choice is to keep the program unchanged (speedup 1x).
+            improving = [s for s in ran_scheds if s[3] < initial_exec_time]
+            if improving:
+                best_sched = min(improving, key=lambda x:x[3])
                 best_sched_str = best_sched[0]
                 best_sched_exec = best_sched[3]
                 best_json_sched = [best_sched_str, best_sched_exec]
-                best_sched_speedup = initial_exec_time/best_sched[3]
+                best_sched_speedup = initial_exec_time/best_sched_exec
             else:
                 best_sched_str = ''
                 best_sched_exec = initial_exec_time
