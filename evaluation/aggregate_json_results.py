@@ -1,7 +1,7 @@
 """Aggregate ComPilot result JSONs across independent runs into the paper's
 metrics (COMPILOT@T and typical best-of-K speedups).
 
-Usage: python aggregate_json_results.py -r results/<experiment_dir> --k 5
+Usage: python evaluation/aggregate_json_results.py -r results/<experiment_dir> --k 5
 """
 import argparse
 import json

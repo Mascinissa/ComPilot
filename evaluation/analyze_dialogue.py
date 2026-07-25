@@ -3,7 +3,7 @@ schedules were runnable vs. rejected (invalid/illegal) vs. crashed, the runnable
 rate, and the best speedup found. Reads the recorded per-schedule outcomes, so it
 works for both conversational and compact runs.
 
-Usage: python analyze_dialogue.py <results.json> [<results2.json> ...]
+Usage: python evaluation/analyze_dialogue.py <results.json> [<results2.json> ...]
 """
 import json
 import sys

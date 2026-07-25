@@ -70,10 +70,12 @@ Both modes reach comparable speedups. Compact mode keeps the per-turn prompt sma
 
 ## Usage
 
+Run all commands from the repository root.
+
 ### Single exploration
 
 ```bash
-python compilot.py --experiment-name my_first_run
+python src/compilot.py --experiment-name my_first_run
 ```
 
 ### Best-of-K (multiple independent runs)
@@ -82,7 +84,7 @@ Because different runs converge to different optima, running several independent
 
 ```bash
 for i in $(seq 1 5); do
-  python compilot.py --experiment-name my_experiment --run-id $i &
+  python src/compilot.py --experiment-name my_experiment --run-id $i &
 done
 wait
 ```
@@ -112,26 +114,28 @@ The paper reports two aggregate speedup metrics, both measured against each prog
 Because the metrics aggregate over independent runs, first produce several runs of the same experiment with distinct `--run-id` values (see [Best-of-K](#best-of-k-multiple-independent-runs)), then aggregate:
 
 ```bash
-python aggregate_json_results.py -r results/<experiment_name> --k 5
+python evaluation/aggregate_json_results.py -r results/<experiment_name> --k 5
 ```
 
 This prints a table of COMPILOT@T and COMPILOT_K@T over `T = 5, 10, ..., 30` and writes a per-benchmark CSV (`aggregate_results_*.csv`) alongside it. The benchmarks used in the paper are the [PolyBench](https://web.cse.ohio-state.edu/~pouchet.2/software/polybench/) kernels.
 
-For a quick per-run sanity check without aggregating, `analyze_dialogue.py results/<...>/results_*.json` prints, per benchmark, how many proposed schedules were runnable vs. rejected vs. crashed, the runnable rate, and the best speedup (works for both interaction modes).
+For a quick per-run sanity check without aggregating, `python evaluation/analyze_dialogue.py results/<...>/results_*.json` prints, per benchmark, how many proposed schedules were runnable vs. rejected vs. crashed, the runnable rate, and the best speedup (works for both interaction modes).
 
-To regenerate the paper's figures, see `plotting.py` (requires `matplotlib`/`plotly`).
+To regenerate the paper's figures, see `evaluation/plotting.py` (requires `matplotlib`/`plotly`).
 
 ---
 
 ## File Structure
 
-- `compilot.py` — main driver: runs the optimization dialogue for every benchmark, with checkpointing/resume.
-- `compilot_utils.py` — parsing, validation, compiler feedback generation, and the TiraLib/Tiramisu backend interface.
-- `prompts.py` — the system instructions and message templates used with the LLM.
 - `config.yaml` — centralized configuration.
-- `analyze_dialogue.py` — quick per-run outcome analysis.
-- `aggregate_json_results.py` / `eval_utils.py` — the paper's aggregate metrics (COMPILOT@T and best-of-K) across runs.
-- `plotting.py` — supplementary figure-generation code used for the paper's plots (not needed to run ComPilot or compute the metrics).
+- `src/` — the core system:
+  - `compilot.py` — main driver: runs the optimization dialogue for every benchmark, with checkpointing/resume.
+  - `compilot_utils.py` — parsing, validation, compiler feedback generation, and the TiraLib/Tiramisu backend interface.
+  - `prompts.py` — the system instructions and message templates used with the LLM.
+- `evaluation/` — analysis and metrics (not needed to run ComPilot):
+  - `analyze_dialogue.py` — quick per-run outcome analysis.
+  - `aggregate_json_results.py` / `eval_utils.py` — the paper's aggregate metrics (COMPILOT@T and best-of-K) across runs.
+  - `plotting.py` — supplementary figure-generation code for the paper's plots (requires `matplotlib`/`plotly`).
 
 ## Citation
 

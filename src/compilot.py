@@ -7,8 +7,8 @@ reached, keeping the fastest legal schedule. Supports two interaction formats
 (conversational and compact, see `interaction_mode` in config.yaml), per-iteration
 checkpointing for crash/interruption resume, and best-of-K via `--run-id`.
 
-Usage:
-    python compilot.py --experiment-name my_run [--run-id 1] [--config config.yaml]
+Usage (run from the repository root):
+    python src/compilot.py --experiment-name my_run [--run-id 1] [--config config.yaml]
 """
 import os
 import sys
